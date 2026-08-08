@@ -26,7 +26,7 @@ on:
 
 jobs:
   templates:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ubuntu_2404]
     strategy:
       fail-fast: false
     steps:

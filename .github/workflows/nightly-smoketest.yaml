@@ -27,7 +27,7 @@ on:
 
 jobs:
   smoketest:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ubuntu_2404]
     strategy:
       matrix:
         # supported Kubenetes versions
