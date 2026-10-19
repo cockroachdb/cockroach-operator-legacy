@@ -19,6 +19,7 @@ package testutil
 import (
 	"context"
 
+	api "github.com/cockroachdb/cockroach-operator/apis/v1alpha1"
 	"github.com/cockroachdb/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -31,7 +32,8 @@ import (
 
 func NewFakeClient(scheme *runtime.Scheme, objs ...runtime.Object) *FakeClient {
 	return &FakeClient{
-		client: fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(objs...).Build(),
+		client: fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(objs...).
+			WithStatusSubresource(&api.CrdbCluster{}).Build(),
 		scheme: scheme,
 	}
 }
@@ -73,6 +75,14 @@ func NewGetAction(key client.ObjectKey, gvr schema.GroupVersionResource) Action 
 func NewCreateAction(key client.ObjectKey, gvr schema.GroupVersionResource) Action {
 	return &GetAction{
 		verb: "create",
+		key:  key,
+		gvr:  gvr,
+	}
+}
+
+func NewUpdateAction(key client.ObjectKey, gvr schema.GroupVersionResource) Action {
+	return &GetAction{
+		verb: "update",
 		key:  key,
 		gvr:  gvr,
 	}
@@ -197,6 +207,18 @@ func (c *FakeClient) Delete(_ context.Context, obj client.Object, opts ...client
 }
 
 func (c *FakeClient) Update(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+	gvr, err := getGVRFromObject(c.scheme, obj)
+	if err != nil {
+		return errors.Wrapf(err, "failed to find GVR of object")
+	}
+
+	key := client.ObjectKeyFromObject(obj)
+	a := NewUpdateAction(key, gvr)
+
+	if handled, err := c.invoke(a); handled {
+		return err
+	}
+
 	return c.client.Update(ctx, obj, opts...)
 }
 
@@ -208,8 +230,11 @@ func (c *FakeClient) DeleteAllOf(_ context.Context, obj client.Object, opts ...c
 	panic("implement me")
 }
 
+// Status writes go straight to the embedded controller-runtime fake. Only Get,
+// Create and Update consult ReactionChain, so reactors cannot inject
+// status-write errors.
 func (c *FakeClient) Status() client.StatusWriter {
-	return &fakeStatusWriter{client: c}
+	return c.client.Status()
 }
 
 func (c *FakeClient) RESTMapper() meta.RESTMapper {
@@ -218,22 +243,6 @@ func (c *FakeClient) RESTMapper() meta.RESTMapper {
 
 func (c *FakeClient) Scheme() *runtime.Scheme {
 	return c.scheme
-}
-
-type fakeStatusWriter struct {
-	client *FakeClient
-}
-
-func (sw *fakeStatusWriter) Update(ctx context.Context, obj client.Object, opts ...client.SubResourceUpdateOption) error {
-	return sw.client.Status().Update(ctx, obj, opts...)
-}
-
-func (sw *fakeStatusWriter) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
-	return sw.client.Status().Patch(ctx, obj, patch, opts...)
-}
-
-func (sw *fakeStatusWriter) Create(ctx context.Context, obj client.Object, subResource client.Object, opts ...client.SubResourceCreateOption) error {
-	panic("implement me")
 }
 
 func (c *FakeClient) invoke(action Action) (handled bool, err error) {
