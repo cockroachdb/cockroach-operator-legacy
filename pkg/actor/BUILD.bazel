@@ -62,6 +62,7 @@ go_test(
         "export_test.go",
         "partitioned_update_test.go",
         "setup_rbac_test.go",
+        "validate_version_test.go",
     ],
     embed = [":go_default_library"],
     deps = [
