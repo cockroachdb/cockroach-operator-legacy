@@ -24,10 +24,12 @@ import (
 	"github.com/cockroachdb/cockroach-operator/pkg/actor"
 	"github.com/cockroachdb/cockroach-operator/pkg/resource"
 	"github.com/cockroachdb/cockroach-operator/pkg/testutil"
+	"github.com/cockroachdb/errors"
 	"github.com/go-logr/zapr"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap/zaptest"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes/fake"
 )
 
 // Versions below v21.1 keep IsLoggingAPIEnabled false, so Act does not shell
@@ -53,6 +55,101 @@ func fetchCluster(t *testing.T, cl *testutil.FakeClient, namespace, name string)
 	require.NoError(t, cl.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: name}, got))
 	c := resource.NewCluster(got)
 	return &c
+}
+
+// TestVersionCheckerCockroachDBVersionWritesAnnotations covers the
+// cockroachDBVersion (RELATED_IMAGE) path. The image.name path writes the
+// crdb.io/version and crdb.io/containerimage annotations; this path must too,
+// because director.needsPartitionedUpdate reads them.
+func TestVersionCheckerCockroachDBVersionWritesAnnotations(t *testing.T) {
+	setSupportedTestVersions(t)
+	ctx := context.Background()
+	scheme := testutil.InitScheme(t)
+
+	cluster := testutil.NewBuilder("cockroachdb").
+		Namespaced("default").
+		WithUID("cockroachdb-uid").
+		WithNodeCount(1).
+		WithCockroachDBVersion(testNewVersion).
+		Cluster()
+	cluster.SetFalse(api.CrdbVersionChecked)
+
+	cl := testutil.NewFakeClient(scheme, cluster.Unwrap())
+	checker := actor.NewVersionChecker(scheme, cl, fake.NewSimpleClientset())
+
+	require.NoError(t, checker.Act(ctx, cluster, zapr.NewLogger(zaptest.NewLogger(t))))
+
+	got := fetchCluster(t, cl, "default", "cockroachdb")
+	require.Equal(t, testNewVersion, got.GetVersionAnnotation(), "crdb.io/version annotation")
+	require.Equal(t, testNewImage, got.GetAnnotationContainerImage(), "crdb.io/containerimage annotation")
+	require.Equal(t, testNewVersion, got.Status().Version)
+	require.Equal(t, testNewImage, got.Status().CrdbContainerImage)
+	require.True(t, got.True(api.CrdbVersionChecked))
+}
+
+// TestCompleteVersionCheckerKeepsAnnotationsAndStatusInSync pins the shared
+// tail of the version checker: whatever it records in status it records in
+// the annotations too. If the annotation write ever moves back out of this
+// shared function into one branch of Act, this test fails;
+// TestNeedsPartitionedUpdateAfterCockroachDBVersionBump covers the
+// cockroachDBVersion branch actually reaching it.
+func TestCompleteVersionCheckerKeepsAnnotationsAndStatusInSync(t *testing.T) {
+	ctx := context.Background()
+	scheme := testutil.InitScheme(t)
+
+	// completeVersionChecker reads only the cluster's name and namespace.
+	cluster := testutil.NewBuilder("cockroachdb").
+		Namespaced("default").
+		WithUID("cockroachdb-uid").
+		WithNodeCount(1).
+		Cluster()
+	cluster.SetFalse(api.CrdbVersionChecked)
+
+	cl := testutil.NewFakeClient(scheme, cluster.Unwrap())
+	checker := actor.NewVersionChecker(scheme, cl, fake.NewSimpleClientset())
+
+	require.NoError(t, actor.CompleteVersionChecker(ctx, checker, cluster, testOldVersion, testOldImage,
+		zapr.NewLogger(zaptest.NewLogger(t))))
+
+	got := fetchCluster(t, cl, "default", "cockroachdb")
+	require.Equal(t, got.Status().Version, got.GetVersionAnnotation(),
+		"crdb.io/version must match status.version")
+	require.Equal(t, got.Status().CrdbContainerImage, got.GetAnnotationContainerImage(),
+		"crdb.io/containerimage must match status.crdbcontainerimage")
+	require.Equal(t, testOldVersion, got.Status().Version)
+	require.Equal(t, testOldImage, got.Status().CrdbContainerImage)
+	require.True(t, got.True(api.CrdbVersionChecked))
+}
+
+// TestVersionCheckerAnnotationWriteFailureLeavesVersionUnchecked covers the
+// write ordering: when the annotation write fails, the status write must not
+// run, so CrdbVersionChecked stays false and the controller re-runs the
+// checker instead of believing the check completed.
+func TestVersionCheckerAnnotationWriteFailureLeavesVersionUnchecked(t *testing.T) {
+	setSupportedTestVersions(t)
+	ctx := context.Background()
+	scheme := testutil.InitScheme(t)
+
+	cluster := testutil.NewBuilder("cockroachdb").
+		Namespaced("default").
+		WithUID("cockroachdb-uid").
+		WithNodeCount(1).
+		WithCockroachDBVersion(testNewVersion).
+		Cluster()
+	cluster.SetFalse(api.CrdbVersionChecked)
+
+	cl := testutil.NewFakeClient(scheme, cluster.Unwrap())
+	injected := errors.New("injected annotation write failure")
+	cl.AddReactor("update", "crdbclusters", func(testutil.Action) (bool, error) { return true, injected })
+	checker := actor.NewVersionChecker(scheme, cl, fake.NewSimpleClientset())
+
+	err := checker.Act(ctx, cluster, zapr.NewLogger(zaptest.NewLogger(t)))
+	require.ErrorIs(t, err, injected)
+
+	got := fetchCluster(t, cl, "default", "cockroachdb")
+	require.False(t, got.True(api.CrdbVersionChecked), "status must not say checked when the annotation write failed")
+	require.Empty(t, got.GetVersionAnnotation())
+	require.Empty(t, got.Status().Version)
 }
 
 // newVersionBumpTestEnv builds a steady-state cluster (see newTestDirector)
@@ -84,13 +181,8 @@ func newVersionBumpTestEnv(t *testing.T) (*resource.Cluster, actor.Director, *te
 
 // TestNeedsPartitionedUpdateAfterCockroachDBVersionBump walks the director
 // through a version bump made with spec.cockroachDBVersion: first it must run
-// the version checker, then it picks the actor for the actual version change.
-//
-// This test currently pins the bug. A version bump made with
-// spec.cockroachDBVersion runs the version checker, but the checker never
-// writes the crdb.io/version annotation on that path, so the director falls
-// through to a plain Deploy instead of the partitioned update. The next
-// commit fixes the checker and flips these two assertions.
+// the version checker, and once the checker has recorded the new version the
+// director must choose the partitioned update, not a plain Deploy.
 func TestNeedsPartitionedUpdateAfterCockroachDBVersionBump(t *testing.T) {
 	setSupportedTestVersions(t)
 	ctx := context.Background()
@@ -106,9 +198,10 @@ func TestNeedsPartitionedUpdateAfterCockroachDBVersionBump(t *testing.T) {
 
 	refreshed := fetchCluster(t, cl, "default", "cockroachdb")
 	require.True(t, refreshed.True(api.CrdbVersionChecked))
-	require.Empty(t, refreshed.GetVersionAnnotation())
+	require.Equal(t, testNewVersion, refreshed.GetVersionAnnotation())
 	chosen, err = director.GetActorToExecute(ctx, refreshed, log)
 	require.NoError(t, err)
 	require.NotNil(t, chosen)
-	require.Equal(t, api.DeployAction, chosen.GetActionType())
+	require.Equal(t, api.PartitionedUpdateAction, chosen.GetActionType(),
+		"a version bump via cockroachDBVersion must take the partitioned update path")
 }
