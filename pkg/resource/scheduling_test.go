@@ -102,9 +102,10 @@ func schedulingView(p corev1.PodSpec) corev1.PodSpec {
 // where the database pods are, or an install or upgrade stalls on a Job
 // that never lands.
 //
-// It documents the current behavior: the two builders copy the scheduling
-// fields independently, and the Job copy lacks nodeSelector. The next
-// commit gives both builders one definition and flips the last assertion.
+// Both builders take these fields from Cluster.applySchedulingFields, so a
+// field added to one cannot be forgotten by the other. This test compares
+// everything in the pod spec that decides placement, so it also fails when a
+// builder sets a new scheduling field itself and the two disagree.
 func TestBuildersApplyTheSameSchedulingFields(t *testing.T) {
 	withFeatureGates(t, map[featuregate.Feature]bool{
 		features.AffinityRules: true, features.TolerationRules: true, features.TopologySpreadRules: true,
@@ -128,12 +129,43 @@ func TestBuildersApplyTheSameSchedulingFields(t *testing.T) {
 	require.Equal(t, []corev1.LocalObjectReference{{Name: "registry-credentials"}}, stsPod.ImagePullSecrets)
 	require.Equal(t, spec.PriorityClassName, stsPod.PriorityClassName)
 
-	// Today the two builders copy the scheduling fields independently, and the
-	// Job copy never gained nodeSelector: it is the only thing that differs.
-	diff := cmp.Diff(schedulingView(stsPod), schedulingView(jobPod))
-	require.Contains(t, diff, "NodeSelector", "documents the current gap; the next commit closes it")
-	require.Nil(t, jobPod.NodeSelector)
-	withoutSelector := schedulingView(stsPod)
-	withoutSelector.NodeSelector = nil
-	require.Empty(t, cmp.Diff(withoutSelector, schedulingView(jobPod)), "nothing but nodeSelector may differ")
+	// The Job schedules exactly like the StatefulSet, nodeSelector included,
+	// so it lands where the database pods do.
+	require.Empty(t, cmp.Diff(schedulingView(stsPod), schedulingView(jobPod)))
+}
+
+// TestSchedulingFieldsHonorFeatureGates pins the default-off behavior of the
+// three gated fields: with a gate off, neither builder copies that field,
+// while the ungated fields are still applied. The gates default to off, so
+// this is the path most clusters run.
+func TestSchedulingFieldsHonorFeatureGates(t *testing.T) {
+	cases := []struct {
+		gate  featuregate.Feature
+		field string
+		get   func(corev1.PodSpec) any
+	}{
+		{features.AffinityRules, "Affinity", func(p corev1.PodSpec) any { return p.Affinity }},
+		{features.TolerationRules, "Tolerations", func(p corev1.PodSpec) any { return p.Tolerations }},
+		{features.TopologySpreadRules, "TopologySpreadConstraints", func(p corev1.PodSpec) any { return p.TopologySpreadConstraints }},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.gate), func(t *testing.T) {
+			gates := map[featuregate.Feature]bool{
+				features.AffinityRules: true, features.TolerationRules: true, features.TopologySpreadRules: true,
+			}
+			gates[tc.gate] = false
+			withFeatureGates(t, gates)
+			cluster := schedulingTestCluster(t)
+			selector := labels.Common(cluster.Unwrap()).Selector(nil)
+			sts := &appsv1.StatefulSet{}
+			require.NoError(t, resource.StatefulSetBuilder{Cluster: cluster, Selector: selector, Telemetry: "test"}.Build(sts))
+			job := &kbatch.Job{}
+			require.NoError(t, resource.JobBuilder{Cluster: cluster, Selector: selector, JobName: "vcheck"}.Build(job))
+			for name, pod := range map[string]corev1.PodSpec{"statefulset": sts.Spec.Template.Spec, "job": job.Spec.Template.Spec} {
+				require.Nil(t, tc.get(pod), "%s: %s must not be copied while its gate is off", name, tc.field)
+				require.Equal(t, cluster.Spec().NodeSelector, pod.NodeSelector, "%s: ungated fields still apply", name)
+				require.Equal(t, cluster.Spec().PriorityClassName, pod.PriorityClassName, "%s: ungated fields still apply", name)
+			}
+		})
+	}
 }

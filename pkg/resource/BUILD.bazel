@@ -11,6 +11,7 @@ go_library(
         "public_service.go",
         "rbac.go",
         "resource.go",
+        "scheduling.go",
         "sql_ingress.go",
         "statefulset.go",
         "tls_secret.go",
