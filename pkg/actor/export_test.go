@@ -34,3 +34,5 @@ func CompleteVersionChecker(
 ) error {
 	return a.(*versionChecker).completeVersionChecker(ctx, cluster, version, imageName, log)
 }
+
+var NewGenerateCert = newGenerateCert
