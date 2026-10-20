@@ -46,12 +46,15 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// newCertTestEnv returns a secure one-node cluster stored in a fake API
-// server, and the certificate actor bound to that server. The
+// newCertTestEnv returns a secure one-node cluster with the given ingress
+// config (nil for none) stored in a fake API server, and the certificate actor
+// bound to that server. The
 // controller-runtime fake is used directly, with the status subresource
 // registered, because Act writes annotations with Update and conditions with
 // Status().Update and the test must observe both.
-func newCertTestEnv(t *testing.T) (*resource.Cluster, client.Client, actor.Actor) {
+func newCertTestEnv(
+	t *testing.T, ingress *api.IngressConfig,
+) (*resource.Cluster, client.Client, actor.Actor) {
 	t.Helper()
 	scheme := testutil.InitScheme(t)
 	cluster := testutil.NewBuilder("cockroachdb").
@@ -59,6 +62,7 @@ func newCertTestEnv(t *testing.T) (*resource.Cluster, client.Client, actor.Actor
 		WithUID("cockroachdb-uid").
 		WithNodeCount(1).
 		WithTLS().
+		WithIngress(ingress).
 		Cluster()
 	cl := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -103,15 +107,16 @@ func dnsNames(t *testing.T, pemCert []byte) []string {
 // actor through a cluster's life: first generation, then a change that
 // regenerates a certificate the pods already hold.
 //
-// It documents the current behavior: adding the first SQL ingress host
-// regenerates the node certificate (status.sqlHost differs from the spec)
-// but requests no restart, because the restart decision keys on the SQL
-// ingress condition, which the ingress actor only sets later. The next
-// commit fixes that and flips the final assertion.
+// Regenerating a certificate the pods already hold must request a rolling
+// restart, whatever the reason for regenerating: pods copy certificates into
+// an emptyDir at init and never re-read them. Before this was derived from
+// the regeneration itself, adding the first SQL ingress host regenerated the
+// certificate without a restart, because the decision keyed on the
+// SQL-ingress condition the ingress actor sets only later.
 func TestGenerateCertRequestsRestartWhenLiveCertChanges(t *testing.T) {
 	ctx := context.Background()
 	log := zapr.NewLogger(zaptest.NewLogger(t))
-	cluster, cl, act := newCertTestEnv(t)
+	cluster, cl, act := newCertTestEnv(t, nil /* ingress */)
 
 	// First generation: no pods exist yet, so no restart is requested.
 	require.NoError(t, act.Act(ctx, cluster, log))
@@ -134,7 +139,62 @@ func TestGenerateCertRequestsRestartWhenLiveCertChanges(t *testing.T) {
 	require.NotEqual(t, firstCert, secondCert)
 	require.Equal(t, "sql.example.com", cluster.Status().SQLHost)
 
-	// Current behavior: the live certificate changed but no restart was
-	// requested, so pods keep serving the old certificate.
-	require.Empty(t, cluster.GetAnnotationRestartType())
+	// The live certificate changed, so the pods must be rolled.
+	require.Equal(t, api.ClusterRestartType(api.RollingRestart).String(), cluster.GetAnnotationRestartType())
+
+	// A run that changes nothing must not request a restart. Clear the
+	// annotation the way the restart actor would.
+	cluster.DeleteRestartTypeAnnotation()
+	require.NoError(t, cl.Update(ctx, cluster.Unwrap()))
+	cluster = refetchCluster(t, cl, cluster)
+
+	// The ingress actor has run by now in production; with the condition
+	// true, a restart decision that still consulted it would re-request a
+	// restart here.
+	cluster.SetTrue(api.CrdbSQLIngressExposedCondition)
+	require.NoError(t, cl.Status().Update(ctx, cluster.Unwrap()))
+	cluster = refetchCluster(t, cl, cluster)
+
+	// In production the director would not dispatch the actor here; this
+	// pins the actor's own contract.
+	require.NoError(t, act.Act(ctx, cluster, log))
+	cluster = refetchCluster(t, cl, cluster)
+	thirdCert := nodeCertPEM(t, cl, cluster)
+	require.Equal(t, secondCert, thirdCert, "an unchanged host must not regenerate the certificate")
+	require.Empty(t, cluster.GetAnnotationRestartType(), "no regeneration, no restart")
+
+	// A host change on an already-exposed cluster is the case the old code
+	// handled; it must keep working now that the condition is no longer
+	// consulted.
+	cr = cluster.Unwrap()
+	cr.Spec.Ingress.SQL.Host = "sql2.example.com"
+	require.NoError(t, cl.Update(ctx, cr))
+	cluster = refetchCluster(t, cl, cluster)
+	require.NoError(t, act.Act(ctx, cluster, log))
+	cluster = refetchCluster(t, cl, cluster)
+	fourthCert := nodeCertPEM(t, cl, cluster)
+	require.Contains(t, dnsNames(t, fourthCert), "sql2.example.com", "node cert must be regenerated with the new host")
+	require.NotEqual(t, thirdCert, fourthCert)
+	require.Equal(t, "sql2.example.com", cluster.Status().SQLHost)
+	require.Equal(t, api.ClusterRestartType(api.RollingRestart).String(), cluster.GetAnnotationRestartType())
+}
+
+// TestGenerateCertFirstGenerationWithIngressHostRequestsNoRestart generates
+// the first certificates for a cluster whose spec already names a SQL ingress
+// host, so the host change and the first generation happen in the same run.
+func TestGenerateCertFirstGenerationWithIngressHostRequestsNoRestart(t *testing.T) {
+	ctx := context.Background()
+	log := zapr.NewLogger(zaptest.NewLogger(t))
+	const host = "sql.example.com"
+	cluster, cl, act := newCertTestEnv(t, &api.IngressConfig{SQL: &api.Ingress{Host: host}})
+
+	// The secret was not ready before this run, so nothing holds the old
+	// certificate; this pins that replacedLiveCert reads the secret's state
+	// before the write, not after.
+	require.NoError(t, act.Act(ctx, cluster, log))
+	cluster = refetchCluster(t, cl, cluster)
+	require.Contains(t, dnsNames(t, nodeCertPEM(t, cl, cluster)), host)
+	require.True(t, cluster.True(api.CertificateGenerated))
+	require.Equal(t, host, cluster.Status().SQLHost)
+	require.Empty(t, cluster.GetAnnotationRestartType(), "first generation must not request a restart")
 }
