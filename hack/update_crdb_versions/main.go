@@ -21,6 +21,7 @@ import (
 	"flag"
 	"fmt"
 	"math/rand"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -37,14 +38,14 @@ import (
 )
 
 const (
-	cockroachDBRegistry = "cockroachdb"
-	cockroachDBImage    = "cockroach"
-	httpTimeoutSecs     = 30
-	dockerHubPageSize   = 100
-	maxRequestAttempts  = 6
-	maxRetryWait        = 60 * time.Second
-	repo                = "registry.connect.redhat.com/cockroachdb/cockroach"
-	versionsFile        = "crdb-versions.yaml"
+	cockroachDBRegistry    = "cockroachdb"
+	cockroachDBImage       = "cockroach"
+	httpTimeoutSecs        = 30
+	dockerRegistryPageSize = 1000
+	maxRequestAttempts     = 6
+	maxRetryWait           = 60 * time.Second
+	repo                   = "registry.connect.redhat.com/cockroachdb/cockroach"
+	versionsFile           = "crdb-versions.yaml"
 
 	fileHeader = `#
 # Supported CockroachDB versions.
@@ -73,7 +74,9 @@ var (
 	// semVerRegex defines a Regexp for ensuring a valid (non-prerelease) version.
 	semVerRegex = regexp.MustCompile(`v?([0-9]+)(\.[0-9]+)?(\.[0-9]+)?$`)
 
-	BaseDockerHubURL = fmt.Sprintf("https://hub.docker.com/v2/namespaces/%s/repositories/%s/tags",
+	DockerRegistryTagsURL = fmt.Sprintf("https://registry-1.docker.io/v2/%s/%s/tags/list",
+		cockroachDBRegistry, cockroachDBImage)
+	DockerRegistryTokenURL = fmt.Sprintf("https://auth.docker.io/token?service=registry.docker.io&scope=repository:%s/%s:pull",
 		cockroachDBRegistry, cockroachDBImage)
 )
 
@@ -153,7 +156,7 @@ func GenerateCrdbVersions(baseURL string) (*yamlOutput, error) {
 		return nil, err
 	}
 
-	dockerHubTags, err := fetchDockerHubTags(client, BaseDockerHubURL)
+	dockerHubTags, err := fetchDockerRegistryTags(client)
 	if err != nil {
 		return nil, err
 	}
@@ -162,7 +165,7 @@ func GenerateCrdbVersions(baseURL string) (*yamlOutput, error) {
 }
 
 func fetchAPIResponse(client *http.Client, url string) (*apiResponse, error) {
-	r, err := getWithRetry(client, url)
+	r, err := getWithRetry(client, url, nil)
 	if err != nil {
 		return nil, errors.Wrap(err, "fetching CRDB versions")
 	}
@@ -176,72 +179,117 @@ func fetchAPIResponse(client *http.Client, url string) (*apiResponse, error) {
 	return &resp, nil
 }
 
-func fetchDockerHubTags(client *http.Client, baseURL string) (map[string]bool, error) {
-	nextURL, err := url.Parse(baseURL)
+// Use the Registry API rather than the Hub API, which caps anonymous pagination.
+// Public pull access needs only a short-lived anonymous token, so this also works
+// in pull-request workflows without Docker account credentials.
+func fetchDockerRegistryTags(client *http.Client) (map[string]bool, error) {
+	token, err := fetchDockerRegistryToken(client)
 	if err != nil {
-		return nil, errors.Wrap(err, "parsing Docker Hub URL")
+		return nil, err
+	}
+	headers := http.Header{"Authorization": {"Bearer " + token}}
+	nextURL, err := url.Parse(DockerRegistryTagsURL)
+	if err != nil {
+		return nil, errors.Wrap(err, "parsing Docker registry URL")
 	}
 	query := nextURL.Query()
-	query.Set("page_size", strconv.Itoa(dockerHubPageSize))
+	query.Set("n", strconv.Itoa(dockerRegistryPageSize))
 	nextURL.RawQuery = query.Encode()
 
 	tags := make(map[string]bool)
 	seenPages := make(map[string]bool)
-	expectedCount := 0
 	for nextURL != nil {
 		if seenPages[nextURL.String()] {
-			return nil, errors.Errorf("Docker Hub pagination loop at %s", nextURL)
+			return nil, errors.Errorf("Docker registry pagination loop at %s", nextURL)
 		}
 		seenPages[nextURL.String()] = true
 
-		r, err := getWithRetry(client, nextURL.String())
+		r, err := getWithRetry(client, nextURL.String(), headers)
 		if err != nil {
-			return nil, errors.Wrap(err, "fetching Docker Hub tags")
+			return nil, errors.Wrap(err, "fetching Docker registry tags")
 		}
 
-		var page dockerHubTagsResponse
+		var page struct {
+			Tags []string `json:"tags"`
+		}
 		decodeErr := json.NewDecoder(r.Body).Decode(&page)
 		closeErr := r.Body.Close()
 		if decodeErr != nil {
-			return nil, errors.Wrap(decodeErr, "decoding Docker Hub tags")
+			return nil, errors.Wrap(decodeErr, "decoding Docker registry tags")
 		}
 		if closeErr != nil {
-			return nil, errors.Wrap(closeErr, "closing Docker Hub response")
+			return nil, errors.Wrap(closeErr, "closing Docker registry response")
 		}
 
-		if page.Count > expectedCount {
-			expectedCount = page.Count
-		}
-		for _, result := range page.Results {
-			tags[result.Name] = true
+		for _, tag := range page.Tags {
+			tags[tag] = true
 		}
 
-		if page.Next == "" {
-			nextURL = nil
-			continue
-		}
-		nextURL, err = url.Parse(page.Next)
+		nextURL, err = nextRegistryPage(nextURL, r.Header.Values("Link"))
 		if err != nil {
-			return nil, errors.Wrap(err, "parsing next Docker Hub page URL")
+			return nil, err
 		}
-	}
-
-	// Guard against a silently truncated listing: dropping a page would omit
-	// valid versions and, via the removal guard, abort the run with a
-	// misleading message. Comparing against the total the API reports catches
-	// that before it can happen.
-	if expectedCount > 0 && len(tags) < expectedCount {
-		return nil, errors.Errorf("incomplete Docker Hub tag listing: fetched %d of %d tags",
-			len(tags), expectedCount)
 	}
 
 	return tags, nil
 }
 
-func getWithRetry(client *http.Client, url string) (*http.Response, error) {
+func fetchDockerRegistryToken(client *http.Client) (string, error) {
+	r, err := getWithRetry(client, DockerRegistryTokenURL, nil)
+	if err != nil {
+		return "", errors.Wrap(err, "fetching Docker registry token")
+	}
+	defer r.Body.Close()
+	var response struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&response); err != nil {
+		return "", errors.Wrap(err, "decoding Docker registry token")
+	}
+	if response.Token == "" {
+		return "", errors.New("Docker registry returned an empty token")
+	}
+	return response.Token, nil
+}
+
+func nextRegistryPage(current *url.URL, links []string) (*url.URL, error) {
+	for _, header := range links {
+		for _, link := range strings.Split(header, ",") {
+			target, parameters, ok := strings.Cut(strings.TrimSpace(link), ">")
+			if !ok || !strings.HasPrefix(target, "<") {
+				return nil, errors.New("invalid Docker registry pagination link")
+			}
+			_, attributes, err := mime.ParseMediaType("link" + parameters)
+			if err != nil {
+				return nil, errors.Wrap(err, "parsing Docker registry pagination link")
+			}
+			if attributes["rel"] != "next" {
+				continue
+			}
+			next, err := url.Parse(strings.TrimPrefix(target, "<"))
+			if err != nil {
+				return nil, errors.Wrap(err, "parsing Docker registry page URL")
+			}
+			next = current.ResolveReference(next)
+			// Keep the bearer token on the repository endpoint that issued the link.
+			if next.Scheme != current.Scheme || next.Host != current.Host || next.Path != current.Path {
+				return nil, errors.New("Docker registry pagination link changed repository endpoint")
+			}
+			return next, nil
+		}
+	}
+	return nil, nil
+}
+
+func getWithRetry(client *http.Client, url string, headers http.Header) (*http.Response, error) {
 	var lastErr error
 	for attempt := 1; attempt <= maxRequestAttempts; attempt++ {
-		r, err := client.Get(url)
+		req, err := http.NewRequest(http.MethodGet, url, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header = headers.Clone()
+		r, err := client.Do(req)
 		if err == nil && r.StatusCode >= http.StatusOK && r.StatusCode < http.StatusMultipleChoices {
 			return r, nil
 		}
@@ -382,14 +430,6 @@ func ValidateNoVersionRemovals(existing, updated []string) error {
 	sort.Strings(removed)
 	return errors.Errorf("refusing to remove existing CRDB versions: %s; rerun with CRDB_VERSION_UPDATE_ARGS=-allow-removals for an intentional removal",
 		strings.Join(removed, ", "))
-}
-
-type dockerHubTagsResponse struct {
-	Count   int    `json:"count"`
-	Next    string `json:"next"`
-	Results []struct {
-		Name string `json:"name"`
-	} `json:"results"`
 }
 
 // apiResponse encapsulates the response from the RH Catalog API.

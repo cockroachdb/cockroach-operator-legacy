@@ -35,7 +35,7 @@ import (
 )
 
 var (
-	crdbURLPath = "/v2/cockroachdb/cockroach/tags"
+	crdbURLPath = "/v2/cockroachdb/cockroach/tags/list"
 )
 
 func TestUpdateCrdbVersions(t *testing.T) {
@@ -131,13 +131,11 @@ func TestUpdateCrdbVersions(t *testing.T) {
 		for _, img := range results {
 			names = append(names, img.Tag)
 		}
-		writeDockerPage(t, w, len(dockerImages), next, names)
+		writeDockerPage(t, w, next, names)
 	}))
 	defer dockerServer.Close()
 
-	previousDockerHubURL := BaseDockerHubURL
-	BaseDockerHubURL = dockerServer.URL + crdbURLPath
-	t.Cleanup(func() { BaseDockerHubURL = previousDockerHubURL })
+	useDockerRegistry(t, dockerServer)
 
 	updated, err := GenerateCrdbVersions(server.URL)
 	require.NoError(t, err)
@@ -147,7 +145,7 @@ func TestUpdateCrdbVersions(t *testing.T) {
 	require.Equal(t, 3, dockerRequests, "one retry plus two paginated requests")
 }
 
-func TestUpdateCrdbVersionsFailsWhenDockerHubRemainsUnavailable(t *testing.T) {
+func TestUpdateCrdbVersionsFailsWhenDockerRegistryRemainsUnavailable(t *testing.T) {
 	redHatServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"data":[]}`)
 	}))
@@ -161,18 +159,16 @@ func TestUpdateCrdbVersionsFailsWhenDockerHubRemainsUnavailable(t *testing.T) {
 	}))
 	defer dockerServer.Close()
 
-	previousDockerHubURL := BaseDockerHubURL
-	BaseDockerHubURL = dockerServer.URL + crdbURLPath
-	t.Cleanup(func() { BaseDockerHubURL = previousDockerHubURL })
+	useDockerRegistry(t, dockerServer)
 
 	_, err := GenerateCrdbVersions(redHatServer.URL)
 	require.ErrorContains(t, err, "request failed after 6 attempts")
 	require.Equal(t, 6, dockerRequests)
 }
 
-// TestFetchDockerHubTagsRetriesMidPagination ensures a 429 encountered after the
+// TestFetchDockerRegistryTagsRetriesMidPagination ensures a 429 encountered after the
 // first page has already been collected is retried without losing tags.
-func TestFetchDockerHubTagsRetriesMidPagination(t *testing.T) {
+func TestFetchDockerRegistryTagsRetriesMidPagination(t *testing.T) {
 	redHatServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"data":[
 			{"docker_image_digest":"sha256:image1","repositories":[{"tags":[{"name":"v1"}]}]},
@@ -185,7 +181,7 @@ func TestFetchDockerHubTagsRetriesMidPagination(t *testing.T) {
 	page2Attempts := 0
 	dockerServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("page") == "" {
-			writeDockerPage(t, w, 2, dockerServer.URL+crdbURLPath+"?page=2", tagNames("v1"))
+			writeDockerPage(t, w, dockerServer.URL+crdbURLPath+"?page=2", tagNames("v1"))
 			return
 		}
 
@@ -196,13 +192,11 @@ func TestFetchDockerHubTagsRetriesMidPagination(t *testing.T) {
 			w.WriteHeader(http.StatusTooManyRequests)
 			return
 		}
-		writeDockerPage(t, w, 2, "", tagNames("v2"))
+		writeDockerPage(t, w, "", tagNames("v2"))
 	}))
 	defer dockerServer.Close()
 
-	previousDockerHubURL := BaseDockerHubURL
-	BaseDockerHubURL = dockerServer.URL + crdbURLPath
-	t.Cleanup(func() { BaseDockerHubURL = previousDockerHubURL })
+	useDockerRegistry(t, dockerServer)
 
 	updated, err := GenerateCrdbVersions(redHatServer.URL)
 	require.NoError(t, err)
@@ -210,9 +204,9 @@ func TestFetchDockerHubTagsRetriesMidPagination(t *testing.T) {
 	require.Equal(t, []string{"v1", "v2"}, versionTags(updated))
 }
 
-// TestFetchDockerHubTagsDetectsPaginationLoop ensures a self-referential Next
-// pointer is detected instead of looping forever.
-func TestFetchDockerHubTagsDetectsPaginationLoop(t *testing.T) {
+// TestFetchDockerRegistryTagsDetectsPaginationLoop ensures a self-referential Next
+// link is detected instead of looping forever.
+func TestFetchDockerRegistryTagsDetectsPaginationLoop(t *testing.T) {
 	redHatServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"data":[]}`)
 	}))
@@ -220,18 +214,15 @@ func TestFetchDockerHubTagsDetectsPaginationLoop(t *testing.T) {
 
 	var dockerServer *httptest.Server
 	dockerServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Always point Next at the same URL to create a loop. count is left at
-		// zero so the completeness check does not fire first.
-		writeDockerPage(t, w, 0, dockerServer.URL+crdbURLPath+"?page=stuck", tagNames("v1"))
+		// Always point at the same next-page URL to create a loop.
+		writeDockerPage(t, w, dockerServer.URL+crdbURLPath+"?page=stuck", tagNames("v1"))
 	}))
 	defer dockerServer.Close()
 
-	previousDockerHubURL := BaseDockerHubURL
-	BaseDockerHubURL = dockerServer.URL + crdbURLPath
-	t.Cleanup(func() { BaseDockerHubURL = previousDockerHubURL })
+	useDockerRegistry(t, dockerServer)
 
 	_, err := GenerateCrdbVersions(redHatServer.URL)
-	require.ErrorContains(t, err, "Docker Hub pagination loop")
+	require.ErrorContains(t, err, "Docker registry pagination loop")
 }
 
 // TestUpdateVersionsFileKeepsFileOnRemoval proves the end-to-end flow leaves the
@@ -248,13 +239,11 @@ func TestUpdateVersionsFileKeepsFileOnRemoval(t *testing.T) {
 	defer redHatServer.Close()
 
 	dockerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		writeDockerPage(t, w, 2, "", tagNames("v1", "v2"))
+		writeDockerPage(t, w, "", tagNames("v1", "v2"))
 	}))
 	defer dockerServer.Close()
 
-	previousDockerHubURL := BaseDockerHubURL
-	BaseDockerHubURL = dockerServer.URL + crdbURLPath
-	t.Cleanup(func() { BaseDockerHubURL = previousDockerHubURL })
+	useDockerRegistry(t, dockerServer)
 
 	original := `#
 # Supported CockroachDB versions.
@@ -301,13 +290,11 @@ func TestUpdateVersionsFileBootstrapsMissingFile(t *testing.T) {
 	defer redHatServer.Close()
 
 	dockerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		writeDockerPage(t, w, 1, "", tagNames("v1"))
+		writeDockerPage(t, w, "", tagNames("v1"))
 	}))
 	defer dockerServer.Close()
 
-	previousDockerHubURL := BaseDockerHubURL
-	BaseDockerHubURL = dockerServer.URL + crdbURLPath
-	t.Cleanup(func() { BaseDockerHubURL = previousDockerHubURL })
+	useDockerRegistry(t, dockerServer)
 
 	path := filepath.Join(t.TempDir(), "crdb-versions.yaml")
 	require.NoError(t, UpdateVersionsFile(path, redHatServer.URL, false))
@@ -317,26 +304,95 @@ func TestUpdateVersionsFileBootstrapsMissingFile(t *testing.T) {
 	require.Contains(t, string(written), "tag: v1\n")
 }
 
-// TestFetchDockerHubTagsDetectsTruncatedListing ensures a listing that reports
-// more tags than it returns is rejected instead of silently dropping versions.
-func TestFetchDockerHubTagsDetectsTruncatedListing(t *testing.T) {
+// The Hub API rejects anonymous page 11 even for a public repository. The
+// Registry API must authenticate and follow its cursor beyond the first 1000 tags.
+func TestFetchDockerRegistryTagsBeyondAnonymousHubLimit(t *testing.T) {
 	redHatServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"data":[]}`)
+		fmt.Fprint(w, `{"data":[
+			{"docker_image_digest":"sha256:image1","repositories":[{"tags":[{"name":"v1"}]}]},
+			{"docker_image_digest":"sha256:image2","repositories":[{"tags":[{"name":"v2"}]}]}
+		]}`)
 	}))
 	defer redHatServer.Close()
 
+	requests := 0
 	dockerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Reports 5 total but returns only 1 tag and no further pages.
-		writeDockerPage(t, w, 5, "", tagNames("v1"))
+		requests++
+		require.Equal(t, "Bearer public-read-token", r.Header.Get("Authorization"))
+		require.Equal(t, "1000", r.URL.Query().Get("n"))
+		if r.URL.Query().Get("last") == "" {
+			names := []string{"v1"}
+			for i := range 999 {
+				names = append(names, fmt.Sprintf("build-%d", i))
+			}
+			writeDockerPage(t, w, crdbURLPath+"?n=1000&last=build-998", names)
+			return
+		}
+		require.Equal(t, "build-998", r.URL.Query().Get("last"))
+		writeDockerPage(t, w, "", tagNames("v2"))
 	}))
 	defer dockerServer.Close()
+	useDockerRegistry(t, dockerServer)
 
-	previousDockerHubURL := BaseDockerHubURL
-	BaseDockerHubURL = dockerServer.URL + crdbURLPath
-	t.Cleanup(func() { BaseDockerHubURL = previousDockerHubURL })
+	updated, err := GenerateCrdbVersions(redHatServer.URL)
+	require.NoError(t, err)
+	require.Equal(t, []string{"v1", "v2"}, versionTags(updated))
+	require.Equal(t, 2, requests)
+}
 
-	_, err := GenerateCrdbVersions(redHatServer.URL)
-	require.ErrorContains(t, err, "incomplete Docker Hub tag listing")
+func TestFetchDockerRegistryTagsRejectsInvalidPagination(t *testing.T) {
+	for _, link := range []string{
+		`invalid`,
+		`<https://example.com/tags>; rel="next"`,
+		`</another-repository/tags/list>; rel="next"`,
+	} {
+		t.Run(link, func(t *testing.T) {
+			redHatServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprint(w, `{"data":[]}`)
+			}))
+			defer redHatServer.Close()
+			dockerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Link", link)
+				fmt.Fprint(w, `{"tags":["v1"]}`)
+			}))
+			defer dockerServer.Close()
+			useDockerRegistry(t, dockerServer)
+
+			_, err := GenerateCrdbVersions(redHatServer.URL)
+			require.ErrorContains(t, err, "pagination link")
+		})
+	}
+}
+
+func TestFetchDockerRegistryTokenFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		want   string
+	}{
+		{"denied", http.StatusForbidden, `{}`, "fetching Docker registry token"},
+		{"empty", http.StatusOK, `{"token":""}`, "empty token"},
+		{"invalid", http.StatusOK, `{`, "decoding Docker registry token"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			redHatServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprint(w, `{"data":[]}`)
+			}))
+			defer redHatServer.Close()
+			tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				fmt.Fprint(w, tc.body)
+			}))
+			defer tokenServer.Close()
+			previous := DockerRegistryTokenURL
+			DockerRegistryTokenURL = tokenServer.URL
+			t.Cleanup(func() { DockerRegistryTokenURL = previous })
+
+			_, err := GenerateCrdbVersions(redHatServer.URL)
+			require.ErrorContains(t, err, tc.want)
+		})
+	}
 }
 
 func TestValidateNoVersionRemovals(t *testing.T) {
@@ -350,23 +406,32 @@ func TestValidateNoVersionRemovals(t *testing.T) {
 		"refusing to remove existing CRDB versions: v25.2.2; rerun with CRDB_VERSION_UPDATE_ARGS=-allow-removals for an intentional removal")
 }
 
-// writeDockerPage encodes a single Docker Hub tags page. count is the total the
-// API claims to hold; next is the URL of the following page ("" when last).
-func writeDockerPage(t *testing.T, w http.ResponseWriter, count int, next string, names []string) {
+// useDockerRegistry supplies anonymous pull tokens without account credentials.
+func useDockerRegistry(t *testing.T, registry *httptest.Server) {
 	t.Helper()
-	response := struct {
-		Count   int    `json:"count"`
-		Next    string `json:"next"`
-		Results []struct {
-			Name string `json:"name"`
-		} `json:"results"`
-	}{Count: count, Next: next}
-	for _, name := range names {
-		response.Results = append(response.Results, struct {
-			Name string `json:"name"`
-		}{Name: name})
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Empty(t, r.Header.Get("Authorization"))
+		require.Equal(t, "registry.docker.io", r.URL.Query().Get("service"))
+		require.Equal(t, "repository:cockroachdb/cockroach:pull", r.URL.Query().Get("scope"))
+		fmt.Fprint(w, `{"token":"public-read-token"}`)
+	}))
+	t.Cleanup(tokenServer.Close)
+	previousTags, previousToken := DockerRegistryTagsURL, DockerRegistryTokenURL
+	DockerRegistryTagsURL = registry.URL + crdbURLPath
+	DockerRegistryTokenURL = tokenServer.URL + "?service=registry.docker.io&scope=repository:cockroachdb/cockroach:pull"
+	t.Cleanup(func() { DockerRegistryTagsURL, DockerRegistryTokenURL = previousTags, previousToken })
+}
+
+// writeDockerPage encodes a Registry API page and its optional next-page link.
+func writeDockerPage(t *testing.T, w http.ResponseWriter, next string, names []string) {
+	t.Helper()
+	if next != "" {
+		w.Header().Set("Link", fmt.Sprintf(`<%s>; rel="next"`, next))
 	}
-	require.NoError(t, json.NewEncoder(w).Encode(response))
+	require.NoError(t, json.NewEncoder(w).Encode(struct {
+		Name string   `json:"name"`
+		Tags []string `json:"tags"`
+	}{Name: "cockroachdb/cockroach", Tags: names}))
 }
 
 func tagNames(names ...string) []string {
