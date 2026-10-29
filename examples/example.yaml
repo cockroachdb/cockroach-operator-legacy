@@ -68,3 +68,9 @@ spec:
   # nodeSelectors used to match against
   # nodeSelector:
   #   worker-pool-name: crdb-workers
+
+  # hostAliases entries are added to /etc/hosts in each CockroachDB pod.
+  # hostAliases:
+  # - ip: "10.10.0.10"
+  #   hostnames:
+  #   - "dev.local"

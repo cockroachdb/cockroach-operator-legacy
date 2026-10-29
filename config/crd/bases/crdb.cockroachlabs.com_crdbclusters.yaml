@@ -1528,6 +1528,21 @@ spec:
                   type: string
                 description: (Optional) If specified, the pod's nodeSelector
                 type: object
+              hostAliases:
+                description: (Optional) HostAliases is an optional list of hosts and
+                  IPs that will be injected into the pod's hosts file.
+                items:
+                  properties:
+                    hostnames:
+                      items:
+                        type: string
+                      type: array
+                    ip:
+                      type: string
+                  required:
+                  - ip
+                  type: object
+                type: array
               nodeTLSSecret:
                 description: '(Optional) The secret with certificates and a private
                   key for the TLS endpoint on the database port. The standard naming

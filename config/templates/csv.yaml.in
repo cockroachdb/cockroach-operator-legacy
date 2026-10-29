@@ -116,6 +116,10 @@ spec:
       - description: (Optional) If specified, the pod's nodeSelector
         displayName: Map of nodeSelectors to match when scheduling pods on nodes
         path: nodeSelector
+      - description: (Optional) HostAliases is an optional list of hosts and IPs
+          that will be injected into the pod's hosts file.
+        displayName: Pod Host Aliases
+        path: hostAliases
       - description: Number of nodes (pods) in the cluster
         displayName: Number of nodes
         path: nodes

@@ -209,6 +209,13 @@ func (in *CrdbClusterSpec) DeepCopyInto(out *CrdbClusterSpec) {
 			(*out)[key] = val
 		}
 	}
+	if in.HostAliases != nil {
+		in, out := &in.HostAliases, &out.HostAliases
+		*out = make([]v1.HostAlias, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
 	if in.Ingress != nil {
 		in, out := &in.Ingress, &out.Ingress
 		*out = new(IngressConfig)

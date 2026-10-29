@@ -137,6 +137,9 @@ type CrdbClusterSpec struct {
 	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Map of nodeSelectors to match when scheduling pods on nodes"
 	// +optional
 	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+	// (Optional) HostAliases is an optional list of hosts and IPs that will be injected into the pod's hosts file if specified.
+	// +optional
+	HostAliases []corev1.HostAlias `json:"hostAliases,omitempty"`
 	// (Optional) Ingress defines the Ingress configuration used to expose the services using Ingress
 	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Cockroach Database Ingress"
 	// +optional

@@ -236,6 +236,9 @@ func (b StatefulSetBuilder) makePodTemplate() corev1.PodTemplateSpec {
 	if len(b.Spec().NodeSelector) > 0 {
 		pod.Spec.NodeSelector = b.Spec().NodeSelector
 	}
+	if len(b.Spec().HostAliases) > 0 {
+		pod.Spec.HostAliases = b.Spec().HostAliases
+	}
 
 	secret := b.GetImagePullSecret()
 	if secret != nil {
