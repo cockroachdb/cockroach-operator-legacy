@@ -87,4 +87,18 @@ func TestZoneConfigs(t *testing.T) {
 		require.Nil(t, zones)
 		require.Contains(t, err.Error(), "sql: Scan error on column index 1")
 	})
+
+	t.Run("returns error when the row stream fails after some rows", func(t *testing.T) {
+		yml, err := yaml.Marshal(ZoneConfig{RangeMaxBytes: 2})
+		require.NoError(t, err)
+		rows := sqlmock.NewRows([]string{"target", "full_config_yaml"}).
+			AddRow("us-central1-a", string(yml)).
+			AddRow("us-east1-b", string(yml)).
+			RowError(1, errors.New("query execution canceled"))
+		mock.ExpectQuery(query).WillReturnRows(rows)
+
+		zones, err := ZoneConfigs(context.Background(), db)
+		require.Nil(t, zones)
+		require.EqualError(t, errors.Cause(err), "query execution canceled")
+	})
 }

@@ -69,5 +69,10 @@ func ZoneConfigs(ctx context.Context, db *sql.DB) ([]Zone, error) {
 		}
 		zones = append(zones, zone)
 	}
+	// Next also returns false when the stream fails, which would otherwise look
+	// like a short but complete result set.
+	if err := rows.Err(); err != nil {
+		return nil, errors.Wrap(err, "failed to iterate crdb_internal.zones")
+	}
 	return zones, nil
 }
