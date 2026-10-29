@@ -127,6 +127,14 @@ func TestReconcile(t *testing.T) {
 			want:    ctrl.Result{RequeueAfter: 5 * time.Second},
 			wantErr: "",
 		},
+		{
+			// A successful action may change nothing the controller watches, so
+			// the requeue is the only thing that runs the next action.
+			name:    "successful action requeues so the next action runs",
+			action:  fakeActor{},
+			want:    ctrl.Result{Requeue: true},
+			wantErr: "",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

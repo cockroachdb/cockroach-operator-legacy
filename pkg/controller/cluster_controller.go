@@ -204,8 +204,12 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req reconcile.Request
 		return requeueIfError(err)
 	}
 
+	// Requeue so the director can pick the next action. Actions that change
+	// neither the status nor a watched resource (SetupRBAC) produce no event of
+	// their own, so without this the cluster stalls until the next cache resync.
+	// Once no action is left, the director returns nil and the loop stops above.
 	log.V(int(zapcore.InfoLevel)).Info("reconciliation completed")
-	return noRequeue()
+	return requeueImmediately()
 }
 
 // updateClusterStatus preprocesses a cluster's Status and then persists it to
