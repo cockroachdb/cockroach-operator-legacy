@@ -10,6 +10,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 * Fixed a stall where a cluster stopped making progress after the operator created its RBAC resources, leaving it without a StatefulSet until the next cache resync.
 * Fixed an extra rolling restart of all pods on the first deploy after a restart, including for changes that should not touch pods such as a node count change.
 * Fixed zone configuration reads returning partial results without an error when the query stream failed part way through.
+* Fixed the operator restarting a cluster a second time when clearing the restart annotation failed or conflicted.
 
 # [v2.18.5](https://github.com/cockroachdb/cockroach-operator/compare/v2.18.4...v2.18.5)
 * Added support for CockroachDB v24.1.33, v24.3.36, v25.2.23, v25.2.24, v25.4.15, v25.4.16, v25.4.17, v26.2.6, v26.2.7, v26.3.0, v26.3.1, and v26.3.2.

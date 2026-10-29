@@ -36,6 +36,7 @@ import (
 	kubetypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -108,24 +109,38 @@ func (r *clusterRestart) Act(ctx context.Context, cluster *resource.Cluster, log
 		log.V(DEBUGLEVEL).Info("invalid annotation for cluster restart")
 		return err
 	}
-	// we force the saving of the status on the cluster and cancel the loop
-	fetcher := resource.NewKubeFetcher(ctx, cluster.Namespace(), r.client)
-
-	cr := resource.ClusterPlaceholder(cluster.Name())
-	if err := fetcher.Fetch(cr); err != nil {
-		log.Error(err, "failed to retrieve CrdbCluster resource on restart action")
+	if err := r.clearRestartTypeAnnotation(ctx, cluster, log); err != nil {
 		return err
-	}
-	refreshedCluster := resource.NewCluster(cr)
-	refreshedCluster.Fetcher = fetcher
-	//delete annotation
-	refreshedCluster.DeleteRestartTypeAnnotation()
-	//TODO  use patch for annotations
-	if err := r.client.Update(ctx, refreshedCluster.Unwrap()); err != nil {
-		log.Error(err, "failed reseting the restart cluster field")
 	}
 	log.V(DEBUGLEVEL).Info("completed cluster restart")
 	return nil
+}
+
+// clearRestartTypeAnnotation removes the restart annotation from the CR. The
+// annotation is what selects this action, so a conflict is retried here rather
+// than left to the next reconcile, which would roll the cluster a second time.
+func (r *clusterRestart) clearRestartTypeAnnotation(
+	ctx context.Context, cluster *resource.Cluster, log logr.Logger,
+) error {
+	fetcher := resource.NewKubeFetcher(ctx, cluster.Namespace(), r.client)
+
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		cr := resource.ClusterPlaceholder(cluster.Name())
+		if err := fetcher.Fetch(cr); err != nil {
+			log.Error(err, "failed to retrieve CrdbCluster resource on restart action")
+			return err
+		}
+		refreshedCluster := resource.NewCluster(cr)
+		refreshedCluster.Fetcher = fetcher
+		//delete annotation
+		refreshedCluster.DeleteRestartTypeAnnotation()
+		//TODO  use patch for annotations
+		if err := r.client.Update(ctx, refreshedCluster.Unwrap()); err != nil {
+			log.Error(err, "failed reseting the restart cluster field")
+			return err
+		}
+		return nil
+	})
 }
 
 func statefulSetReplicasAvailable(status *v1.StatefulSetStatus) error {

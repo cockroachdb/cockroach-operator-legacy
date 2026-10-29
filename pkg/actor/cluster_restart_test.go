@@ -23,16 +23,22 @@ import (
 	"go.uber.org/zap/zaptest"
 	"testing"
 
+	api "github.com/cockroachdb/cockroach-operator/apis/v1alpha1"
+	"github.com/cockroachdb/cockroach-operator/pkg/resource"
+	"github.com/cockroachdb/errors"
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	fakeclient "k8s.io/client-go/kubernetes/fake"
 	clienttesting "k8s.io/client-go/testing"
+	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 // HealthCheckerTes struct
@@ -215,4 +221,70 @@ func addPodsToStatefulSet(stsReplicas int32, sts appsv1.StatefulSet, cltSet *fak
 		}
 	}
 	return nil
+}
+
+func TestClusterRestartAnnotationCleanupError(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, api.AddToScheme(scheme))
+
+	cr := &api.CrdbCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "crdb",
+			Namespace:   "crdb",
+			Annotations: map[string]string{resource.CrdbRestartTypeAnnotation: "Rolling"},
+		},
+	}
+
+	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cr).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Update: func(context.Context, crclient.WithWatch, crclient.Object, ...crclient.UpdateOption) error {
+				return errors.New("boom")
+			},
+		}).Build()
+
+	r := newClusterRestart(client, nil, nil).(*clusterRestart)
+	cluster := resource.NewCluster(cr)
+
+	// The annotation is what selects the restart action, so a failed cleanup has
+	// to surface or the cluster restarts again on the next reconcile.
+	err := r.clearRestartTypeAnnotation(context.TODO(), &cluster, zapr.NewLogger(zaptest.NewLogger(t)))
+	require.EqualError(t, err, "boom")
+}
+
+func TestClusterRestartAnnotationCleanupRetriesConflict(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, api.AddToScheme(scheme))
+
+	cr := &api.CrdbCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "crdb",
+			Namespace:   "crdb",
+			Annotations: map[string]string{resource.CrdbRestartTypeAnnotation: "Rolling"},
+		},
+	}
+
+	var updates int
+	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cr).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Update: func(ctx context.Context, c crclient.WithWatch, obj crclient.Object, opts ...crclient.UpdateOption) error {
+				updates++
+				if updates == 1 {
+					return k8sErrors.NewConflict(
+						schema.GroupResource{Resource: "crdbclusters"}, obj.GetName(), errors.New("conflict"))
+				}
+				return c.Update(ctx, obj, opts...)
+			},
+		}).Build()
+
+	r := newClusterRestart(client, nil, nil).(*clusterRestart)
+	cluster := resource.NewCluster(cr)
+
+	// A conflict must be retried here. Leaving the annotation behind would make
+	// the next reconcile roll the cluster again.
+	require.NoError(t, r.clearRestartTypeAnnotation(context.TODO(), &cluster, zapr.NewLogger(zaptest.NewLogger(t))))
+	require.Equal(t, 2, updates)
+
+	updated := &api.CrdbCluster{}
+	require.NoError(t, client.Get(context.TODO(), crclient.ObjectKeyFromObject(cr), updated))
+	require.NotContains(t, updated.Annotations, resource.CrdbRestartTypeAnnotation)
 }
