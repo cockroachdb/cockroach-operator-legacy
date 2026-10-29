@@ -18,6 +18,7 @@ package resource_test
 
 import (
 	"bytes"
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -25,6 +26,7 @@ import (
 	"testing"
 
 	api "github.com/cockroachdb/cockroach-operator/apis/v1alpha1"
+	"github.com/cockroachdb/cockroach-operator/pkg/kube"
 	"github.com/cockroachdb/cockroach-operator/pkg/labels"
 	"github.com/cockroachdb/cockroach-operator/pkg/resource"
 	"github.com/cockroachdb/cockroach-operator/pkg/testutil"
@@ -33,6 +35,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 var update = flag.Bool("update", false, "update the golden files of this test")
@@ -116,4 +120,46 @@ func load(t *testing.T, file string) []byte {
 	}
 
 	return content
+}
+
+// An unrelated change writes the StatefulSet. That write must keep the restart
+// marker, or every pod rolls a second time.
+func TestStatefulSetKeepsRestartMarkerOnRedeploy(t *testing.T) {
+	ctx := context.Background()
+	scheme := testutil.InitScheme(t)
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	deploy := func(nodes int32) (bool, error) {
+		cluster := testutil.NewBuilder("test-cluster").Namespaced("default").WithUID("uid").
+			WithNodeCount(nodes).WithPVDataStore("1Gi").Cluster()
+		return resource.Reconciler{
+			ManagedResource: resource.NewManagedKubeResource(ctx, cl, cluster, kube.AnnotatingPersister),
+			Builder: resource.StatefulSetBuilder{
+				Cluster:  cluster,
+				Selector: labels.Common(cluster.Unwrap()).Selector(cluster.Spec().AdditionalLabels),
+			},
+			Owner:  cluster.Unwrap(),
+			Scheme: scheme,
+		}.Reconcile()
+	}
+
+	_, err := deploy(1)
+	require.NoError(t, err)
+
+	// The marker the restart actor stamps onto the live pod template.
+	key := client.ObjectKey{Namespace: "default", Name: "test-cluster"}
+	deployed := &appsv1.StatefulSet{}
+	require.NoError(t, cl.Get(ctx, key, deployed))
+	deployed.Spec.Template.Annotations = map[string]string{
+		resource.CrdbRestartAnnotation: "2026-01-01T00:00:00Z",
+	}
+	require.NoError(t, cl.Update(ctx, deployed))
+
+	// A node count change writes the StatefulSet but must not touch the pods.
+	changed, err := deploy(3)
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	require.NoError(t, cl.Get(ctx, key, deployed))
+	require.Equal(t, "2026-01-01T00:00:00Z", deployed.Spec.Template.Annotations[resource.CrdbRestartAnnotation])
 }
