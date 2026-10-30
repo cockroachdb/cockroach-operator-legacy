@@ -16,4 +16,21 @@ limitations under the License.
 
 package actor
 
+import (
+	"context"
+
+	"github.com/cockroachdb/cockroach-operator/pkg/resource"
+	"github.com/go-logr/logr"
+)
+
 var NewDeploy = newDeploy
+
+var NewVersionChecker = newVersionChecker
+
+// CompleteVersionChecker exposes the shared tail of the version checker so
+// tests can assert that status and annotations are written together.
+func CompleteVersionChecker(
+	ctx context.Context, a Actor, cluster *resource.Cluster, version, imageName string, log logr.Logger,
+) error {
+	return a.(*versionChecker).completeVersionChecker(ctx, cluster, version, imageName, log)
+}

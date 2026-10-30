@@ -18,7 +18,7 @@ package actor_test
 
 import (
 	"context"
-
+	"slices"
 	"testing"
 
 	api "github.com/cockroachdb/cockroach-operator/apis/v1alpha1"
@@ -42,7 +42,41 @@ import (
 )
 
 // This constructs a mock cluster that behaves as if it were a real cluster in a steady state.
+// Kept for existing callers; see newTestDirector for the configurable form.
 func createTestDirectorAndStableCluster(t *testing.T) (*resource.Cluster, actor.Director, *fake.Clientset) {
+	cluster, director, _, clientset := newTestDirector(t, testDirectorOptions{})
+	return cluster, director, clientset
+}
+
+// testDirectorOptions describe how a mock steady-state cluster differs from
+// the default one built by createTestDirectorAndStableCluster.
+type testDirectorOptions struct {
+	// builder runs on the cluster builder before .Cluster() is called. It is
+	// the only hook that can set spec fields: resource.Cluster exposes no spec
+	// setters (Spec() returns a copy). It runs after the defaults, so it can
+	// override them, e.g. WithClusterAnnotations replaces the default map.
+	builder func(testutil.ClusterBuilder) testutil.ClusterBuilder
+	// mutateCluster runs after the builder produces the cluster and before any
+	// component is built from it. Use it for status: conditions and
+	// annotations.
+	mutateCluster func(*resource.Cluster)
+	// statefulSetAnnotations are applied to the StatefulSet after CompleteBuild
+	// regenerates it from the cluster, so the StatefulSet can look like one
+	// deployed at a different version than the cluster now asks for. nil keeps
+	// the version the builder copied from the cluster.
+	statefulSetAnnotations map[string]string
+	// seedClusterInClient stores the CrdbCluster itself in the
+	// controller-runtime fake client. Actors that fetch and update the CR
+	// (the version checker) need this; the director predicates do not.
+	seedClusterInClient bool
+}
+
+// newTestDirector builds a mock steady-state cluster, its components, and a
+// director wired to fake clients. The returned FakeClient is the
+// controller-runtime client the director uses.
+func newTestDirector(
+	t *testing.T, opts testDirectorOptions,
+) (*resource.Cluster, actor.Director, *testutil.FakeClient, *fake.Clientset) {
 	var numNodes int32 = 4
 	version := "fake.version"
 	storage := "1Gi"
@@ -51,16 +85,22 @@ func createTestDirectorAndStableCluster(t *testing.T) (*resource.Cluster, actor.
 	clusterAnnotations := map[string]string{
 		resource.CrdbVersionAnnotation: version,
 	}
-	cluster := testutil.NewBuilder("cockroachdb").
+	cb := testutil.NewBuilder("cockroachdb").
 		Namespaced("default").
 		WithUID("cockroachdb-uid").
 		WithPVDataStore(storage).
 		WithNodeCount(numNodes).
-		WithClusterAnnotations(clusterAnnotations).
-		Cluster()
+		WithClusterAnnotations(clusterAnnotations)
+	if opts.builder != nil {
+		cb = opts.builder(cb)
+	}
+	cluster := cb.Cluster()
 	// A stable cluster has a checked version and is initialized
 	cluster.SetTrue(api.CrdbVersionChecked)
 	cluster.SetTrue(api.CrdbInitializedCondition)
+	if opts.mutateCluster != nil {
+		opts.mutateCluster(cluster)
+	}
 
 	// Mock node for our mock cluster
 	node := &v1.Node{}
@@ -149,13 +189,25 @@ func createTestDirectorAndStableCluster(t *testing.T) (*resource.Cluster, actor.
 		objs = append(objs, components[i])
 	}
 
-	// Construct mock cluster access
-	client := testutil.NewFakeClient(scheme, objs...)
+	// CompleteBuild rebuilt the StatefulSet from the cluster; apply any
+	// requested annotations on top so it can look like an older deployment.
+	for k, v := range opts.statefulSetAnnotations {
+		statefulSet.Annotations[k] = v
+	}
+
+	// Construct mock cluster access. The typed clientset does not know the
+	// CrdbCluster type (fake.NewSimpleClientset panics on unregistered kinds),
+	// so the cluster goes only into the controller-runtime client.
+	clientObjs := slices.Clone(objs)
+	if opts.seedClusterInClient {
+		clientObjs = append(clientObjs, cluster.Unwrap())
+	}
+	cl := testutil.NewFakeClient(scheme, clientObjs...)
 	clientset := fake.NewSimpleClientset(objs...)
 	config := &rest.Config{}
-	director := actor.NewDirector(scheme, client, config, clientset)
+	director := actor.NewDirector(scheme, cl, config, clientset)
 
-	return cluster, director, clientset
+	return cluster, director, cl, clientset
 }
 
 func TestNoActionRequired(t *testing.T) {

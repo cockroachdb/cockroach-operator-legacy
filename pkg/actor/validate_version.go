@@ -40,6 +40,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	kubetypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -263,25 +264,6 @@ func (v *versionChecker) Act(ctx context.Context, cluster *resource.Cluster, log
 			log.V(int(zapcore.DebugLevel)).Info("No update on container image annotation -> nothing changed")
 			return nil
 		}
-		//we refresh the resource to make sure we use the latest version
-		fetcher := resource.NewKubeFetcher(ctx, cluster.Namespace(), v.client)
-
-		cr := resource.ClusterPlaceholder(cluster.Name())
-		if err := fetcher.Fetch(cr); err != nil {
-			log.Error(err, "failed to retrieve CrdbCluster resource")
-			return err
-		}
-
-		refreshedCluster := resource.NewCluster(cr)
-		refreshedCluster.Fetcher = fetcher
-		refreshedCluster.SetClusterVersion(calVersion)
-		refreshedCluster.SetAnnotationVersion(calVersion)
-		refreshedCluster.SetCrdbContainerImage(containerImage)
-		refreshedCluster.SetAnnotationContainerImage(containerImage)
-		if err := v.client.Update(ctx, refreshedCluster.Unwrap()); err != nil {
-			log.Error(err, "failed saving the annotations on version checker")
-			// TODO should we fail here?
-		}
 	} else {
 		// after 2 minutes the pod enters in the completed state
 		// if the container it is running and the version was not retrieved
@@ -299,28 +281,65 @@ func (v *versionChecker) Act(ctx context.Context, cluster *resource.Cluster, log
 	return v.completeVersionChecker(ctx, cluster, calVersion, containerImage, log)
 }
 
+// completeVersionChecker records the version the checker settled on. It is
+// the single writer for both representations of that result, so neither way
+// of selecting a version (spec.image.name or spec.cockroachDBVersion) can
+// record one and forget the other:
+//
+//   - The crdb.io/version and crdb.io/containerimage annotations on the CR.
+//     The StatefulSet builder copies these onto the StatefulSet, and
+//     director.needsPartitionedUpdate compares the two copies to decide
+//     whether a version change gets a partitioned update or a plain rollout.
+//   - Status.Version, Status.CrdbContainerImage and the CrdbVersionChecked
+//     condition, which the controller and users read.
+//
+// The annotation and status writes happen sequentially and are not atomic.
+// Nothing reads the annotations until CrdbVersionChecked is true, so a
+// failure in either write simply returns to the controller, which retries the
+// version check. On the image.name path that retry runs another
+// version-checker Job, because the previous Job is deleted before this
+// function is called.
 func (v *versionChecker) completeVersionChecker(
 	ctx context.Context,
 	cluster *resource.Cluster, version,
 	imageName string,
 	log logr.Logger) error {
-	// we force the saving of the status on the cluster and cancel the loop
 	fetcher := resource.NewKubeFetcher(ctx, cluster.Namespace(), v.client)
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		// Re-fetch the CR so both writes below start from the current resourceVersion.
+		cr := resource.ClusterPlaceholder(cluster.Name())
+		if err := fetcher.Fetch(cr); err != nil {
+			log.Error(err, "failed to retrieve CrdbCluster resource")
+			return errors.Wrap(err, "failed to fetch CrdbCluster")
+		}
 
-	cr := resource.ClusterPlaceholder(cluster.Name())
-	if err := fetcher.Fetch(cr); err != nil {
-		log.Error(err, "failed to retrieve CrdbCluster resource")
-		return err
-	}
+		refreshedCluster := resource.NewCluster(cr)
+		refreshedCluster.Fetcher = fetcher
+		refreshedCluster.SetAnnotationVersion(version)
+		refreshedCluster.SetAnnotationContainerImage(imageName)
+		updated := refreshedCluster.Unwrap()
+		if err := v.client.Update(ctx, updated); err != nil {
+			log.Error(err, "failed saving the annotations on version checker")
+			return errors.Wrap(err, "failed to save version annotations")
+		}
 
-	refreshedCluster := resource.NewCluster(cr)
-	refreshedCluster.Fetcher = fetcher
-	// save the status of the cluster
-	refreshedCluster.SetTrue(api.CrdbVersionChecked)
-	refreshedCluster.SetClusterVersion(version)
-	refreshedCluster.SetCrdbContainerImage(imageName)
-	if err := v.client.Status().Update(ctx, refreshedCluster.Unwrap()); err != nil {
-		log.Error(err, "failed saving cluster status on version checker")
+		// Cluster.Unwrap returns a deep copy, so the resourceVersion that Update
+		// wrote landed on updated, not on refreshedCluster. Re-wrapping updated
+		// carries that resourceVersion into the status write below; without it
+		// the status write would conflict with the annotation write.
+		refreshedCluster = resource.NewCluster(updated)
+		refreshedCluster.Fetcher = fetcher
+		// save the status of the cluster
+		refreshedCluster.SetTrue(api.CrdbVersionChecked)
+		refreshedCluster.SetClusterVersion(version)
+		refreshedCluster.SetCrdbContainerImage(imageName)
+		if err := v.client.Status().Update(ctx, refreshedCluster.Unwrap()); err != nil {
+			log.Error(err, "failed saving cluster status on version checker")
+			return errors.Wrap(err, "failed to save version status")
+		}
+		return nil
+	})
+	if err != nil {
 		return err
 	}
 	log.V(int(zapcore.DebugLevel)).Info("completed version checker", "calVersion", version,

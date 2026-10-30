@@ -11,6 +11,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 * Fixed an extra rolling restart of all pods on the first deploy after a restart, including for changes that should not touch pods such as a node count change.
 * Fixed zone configuration reads returning partial results without an error when the query stream failed part way through.
 * Fixed the operator restarting a cluster a second time when clearing the restart annotation failed or conflicted.
+* Fixed version changes made via `cockroachDBVersion` skipping the partitioned update and falling back to a plain rolling update. The version checker now records the version annotations on both version-selection paths.
+* Note: existing clusters using `cockroachDBVersion` acquire the StatefulSet version annotation during their first version change after this operator upgrade, so partitioned updates apply from the second change onward. To have the first change use a partitioned update as well, set the `crdb.io/version` annotation on the StatefulSet to the cluster's `status.version` before changing the version.
 
 # [v2.18.5](https://github.com/cockroachdb/cockroach-operator/compare/v2.18.4...v2.18.5)
 * Added support for CockroachDB v24.1.33, v24.3.36, v25.2.23, v25.2.24, v25.4.15, v25.4.16, v25.4.17, v26.2.6, v26.2.7, v26.3.0, v26.3.1, and v26.3.2.
