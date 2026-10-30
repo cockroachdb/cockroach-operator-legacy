@@ -69,6 +69,11 @@ func (b StatefulSetBuilder) Build(obj client.Object) error {
 		ss.ObjectMeta.Name = b.StatefulSetName()
 	}
 
+	// The restart actor stamps this marker on the live pod template to roll the
+	// pods. Rebuilding the template below would drop it, which reads as a
+	// template change and rolls them a second time, so carry it over.
+	restartedAt, wasRestarted := ss.Spec.Template.Annotations[CrdbRestartAnnotation]
+
 	ss.Annotations = b.Spec().AdditionalAnnotations
 
 	if ss.Annotations == nil {
@@ -87,6 +92,13 @@ func (b StatefulSetBuilder) Build(obj client.Object) error {
 			MatchLabels: b.Selector,
 		},
 		Template: b.makePodTemplate(),
+	}
+
+	if wasRestarted {
+		if ss.Spec.Template.Annotations == nil {
+			ss.Spec.Template.Annotations = make(map[string]string)
+		}
+		ss.Spec.Template.Annotations[CrdbRestartAnnotation] = restartedAt
 	}
 
 	if err := b.Spec().DataStore.Apply(dataDirName, DbContainerName, dataDirMountPath, &ss.Spec,

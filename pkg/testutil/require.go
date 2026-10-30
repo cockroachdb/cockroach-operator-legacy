@@ -106,7 +106,7 @@ func RequireAtMostOneVersionCheckerJob(t *testing.T, sb testenv.DiffingSandbox, 
 
 	// Require that there was never more than one version checker job, and that the version checker job was in fact observed.
 	require.Greater(t, numTimesVersionCheckerSeen, 0)
-	require.Equal(t, true, wait.Interrupted(err))
+	require.True(t, wait.Interrupted(err), "expected polling to time out, got: %v", err)
 }
 
 func fetchJobs(sb testenv.DiffingSandbox) ([]batchv1.Job, error) {
