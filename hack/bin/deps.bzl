@@ -194,16 +194,16 @@ def install_kubectl():
 def install_k3d():
     versions = {
         "k3d_darwin": {
-            "url": "https://github.com/k3d-io/k3d/releases/download/v5.2.2/k3d-darwin-amd64",
-            "sha": "40ac312bc762611de80daff24cb66d79aaaf17bf90e5e8d61caf90e63b57542d",
+            "url": "https://github.com/k3d-io/k3d/releases/download/v5.8.3/k3d-darwin-amd64",
+            "sha": "fd0f8e9e8ea4d8bc3674572ca6ed0833b639bf57c43c708616d937377324cfea",
         },
         "k3d_linux": {
-            "url": "https://github.com/k3d-io/k3d/releases/download/v5.2.2/k3d-linux-amd64",
-            "sha": "7ddb900e6e50120b65d61568f6af007a82331bf83918608a6a7be8910792faef",
+            "url": "https://github.com/k3d-io/k3d/releases/download/v5.8.3/k3d-linux-amd64",
+            "sha": "dbaa79a76ace7f4ca230a1ff41dc7d8a5036a8ad0309e9c54f9bf3836dbe853e",
         },
         "k3d_m1": {
-            "url": "https://github.com/k3d-io/k3d/releases/download/v5.2.2/k3d-darwin-arm64",
-            "sha": "d0149ecb9b3fb831d617a0a880d8235722a70b9131f45f1389235e586050f8f9",
+            "url": "https://github.com/k3d-io/k3d/releases/download/v5.8.3/k3d-darwin-arm64",
+            "sha": "8da468daa7dc7cf7cdd4735f90a9bb05179fa27858250f62e3d8cdf5b5ca0698",
         }
     }
 
