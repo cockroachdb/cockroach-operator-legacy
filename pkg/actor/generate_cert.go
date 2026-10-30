@@ -26,7 +26,6 @@ import (
 	"time"
 
 	api "github.com/cockroachdb/cockroach-operator/apis/v1alpha1"
-	"github.com/cockroachdb/cockroach-operator/pkg/condition"
 	"github.com/cockroachdb/cockroach-operator/pkg/kube"
 	"github.com/cockroachdb/cockroach-operator/pkg/resource"
 	"github.com/cockroachdb/cockroach-operator/pkg/security"
@@ -87,14 +86,12 @@ func (rc *generateCert) Act(ctx context.Context, cluster *resource.Cluster, log 
 		log.Error(err, msg)
 		return errors.Wrap(err, msg)
 	}
-	var expirationDatePtr *string
 	// generate the node certificate for the database to use
-	if expirationDate, err := rc.generateNodeCert(ctx, log, cluster); err != nil {
+	expirationDate, replacedLiveCert, err := rc.generateNodeCert(ctx, log, cluster)
+	if err != nil {
 		msg := "error generating Node Certificate"
 		log.Error(err, msg)
 		return errors.Wrap(err, msg)
-	} else {
-		expirationDatePtr = &expirationDate
 	}
 
 	// TODO if we save the node certificate but error on saving the client
@@ -107,16 +104,19 @@ func (rc *generateCert) Act(ctx context.Context, cluster *resource.Cluster, log 
 		return errors.Wrap(err, msg)
 	}
 
-	var restartRequired bool
-	sqlIngressConditionTrue := condition.True(api.CrdbSQLIngressExposedCondition, cluster.Status().Conditions)
-	if cluster.IsSQLIngressEnabled() && sqlIngressConditionTrue {
-		restartRequired = true
-	}
-
+	// A regenerated live certificate reaches the pods only through a restart;
+	// see generateNodeCert for why. Keying the restart on the regeneration
+	// itself, not on the SQL-ingress condition the ingress actor sets only
+	// after this actor runs, means every reason to regenerate gets one.
+	//
 	// Write the cert expiration annotation to the object. This is an annotation, which is NOT on the CrdbClusterStatus
 	// object, so we need to call rc.client.Update(ctx, crdbobj).
 	fetcher := resource.NewKubeFetcher(ctx, cluster.Namespace(), rc.client)
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	// The restart annotation is persisted before status.sqlHost on purpose: if
+	// the status write fails, the next run regenerates and requests one more
+	// restart, rather than recording the host as done with no restart
+	// requested.
+	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		newcr := resource.ClusterPlaceholder(cluster.Name())
 		if err := fetcher.Fetch(newcr); err != nil {
 			msg := "failed to retrieve CrdbCluster resource"
@@ -125,8 +125,8 @@ func (rc *generateCert) Act(ctx context.Context, cluster *resource.Cluster, log 
 		}
 		refreshedCluster := resource.NewCluster(newcr)
 		refreshedCluster.Fetcher = fetcher
-		refreshedCluster.SetAnnotationCertExpiration(*expirationDatePtr)
-		if restartRequired {
+		refreshedCluster.SetAnnotationCertExpiration(expirationDate)
+		if replacedLiveCert {
 			refreshedCluster.SetRestartTypeAnnotation(api.ClusterRestartType(api.RollingRestart).String())
 		}
 		crdbobj := refreshedCluster.Unwrap()
@@ -157,7 +157,7 @@ func (rc *generateCert) Act(ctx context.Context, cluster *resource.Cluster, log 
 		refreshedCluster := resource.NewCluster(newcr)
 		refreshedCluster.Fetcher = fetcher
 		refreshedCluster.SetTrue(api.CertificateGenerated)
-		if refreshedCluster.IsSQLIngressEnabled() {
+		if cluster.IsSQLIngressEnabled() {
 			refreshedCluster.SetSQLHost(cluster.Spec().Ingress.SQL.Host)
 		}
 
@@ -234,14 +234,27 @@ func (rc *generateCert) generateCA(ctx context.Context, log logr.Logger, cluster
 // This time a new CA is generated, the Node secret is not updated, but the client certicate is generated
 // using a new CA.
 
-func (rc *generateCert) generateNodeCert(ctx context.Context, log logr.Logger, cluster *resource.Cluster) (string, error) {
+// generateNodeCert generates the node key and certificate and stores them in
+// the node TLS secret. It returns the certificate's expiration date and
+// whether it replaced a certificate that a ready secret already held. Pods
+// copy certificates into an emptyDir at init and never re-read them, so any
+// regeneration of a live certificate must be followed by a rolling restart,
+// whatever triggered the regeneration.
+//
+// The proxy for "pods may hold this certificate" is a ready secret. A node
+// secret deleted by hand and regenerated during a host change reports false,
+// so pods keep serving the old certificate (signed by the same CA, without
+// the new name) until something else restarts them.
+func (rc *generateCert) generateNodeCert(
+	ctx context.Context, log logr.Logger, cluster *resource.Cluster,
+) (expiration string, replacedLiveCert bool, err error) {
 	log.V(DEBUGLEVEL).Info("generating node certificate")
 
 	// load the secret.  If it exists don't update the cert
 	secret, err := resource.LoadTLSSecret(cluster.NodeTLSSecretName(),
 		resource.NewKubeResource(ctx, rc.client, cluster.Namespace(), kube.DefaultPersister))
 	if kube.IgnoreNotFound(err) != nil {
-		return "", errors.Wrap(err, "failed to get node TLS secret")
+		return "", false, errors.Wrap(err, "failed to get node TLS secret")
 	}
 
 	var (
@@ -258,13 +271,16 @@ func (rc *generateCert) generateNodeCert(ctx context.Context, log logr.Logger, c
 	// the Actor should have already generated the secret
 	if secret.Ready() {
 		if regenerateCert {
+			// Pods may already hold this certificate; the caller must roll them.
+			replacedLiveCert = true
 			log.V(DEBUGLEVEL).Info("regenerating node certificate because of change in SQLHost")
 			if err = os.WriteFile(filepath.Join(rc.CertsDir, "ca.crt"), secret.CA(), 0644); err != nil {
-				return "", errors.Wrap(err, "failed to write CA cert")
+				return "", false, errors.Wrap(err, "failed to write CA cert")
 			}
 		} else {
 			log.V(DEBUGLEVEL).Info("not updating node certificate as it exists")
-			return rc.getCertificateExpirationDate(ctx, log, secret.Key())
+			exp, err := rc.getCertificateExpirationDate(ctx, log, secret.Key())
+			return exp, false, err
 		}
 	}
 
@@ -296,23 +312,23 @@ func (rc *generateCert) generateNodeCert(ctx context.Context, log logr.Logger, c
 		"failed to generate node certificate and key")
 
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 
 	// Read the node certificates into memory
 	ca, err := os.ReadFile(filepath.Join(rc.CertsDir, "ca.crt"))
 	if err != nil {
-		return "", errors.Wrap(err, "unable to read ca.crt")
+		return "", false, errors.Wrap(err, "unable to read ca.crt")
 	}
 
 	pemCert, err := os.ReadFile(filepath.Join(rc.CertsDir, "node.crt"))
 	if err != nil {
-		return "", errors.Wrap(err, "unable to read node.crt")
+		return "", false, errors.Wrap(err, "unable to read node.crt")
 	}
 
 	pemKey, err := os.ReadFile(filepath.Join(rc.CertsDir, "node.key"))
 	if err != nil {
-		return "", errors.Wrap(err, "unable to ready node.key")
+		return "", false, errors.Wrap(err, "unable to ready node.key")
 	}
 
 	// TODO we are not using the TLS secret type, but are using Opaque secrets.
@@ -323,11 +339,12 @@ func (rc *generateCert) generateNodeCert(ctx context.Context, log logr.Logger, c
 		resource.NewKubeResource(ctx, rc.client, cluster.Namespace(), kube.DefaultPersister))
 
 	if err = secret.UpdateCertAndKeyAndCA(pemCert, pemKey, ca, log); err != nil {
-		return "", errors.Wrap(err, "failed to update node TLS secret certs")
+		return "", false, errors.Wrap(err, "failed to update node TLS secret certs")
 	}
 
 	log.V(DEBUGLEVEL).Info("generated and saved node certificate and key")
-	return rc.getCertificateExpirationDate(ctx, log, pemCert)
+	exp, err := rc.getCertificateExpirationDate(ctx, log, pemCert)
+	return exp, replacedLiveCert, err
 }
 
 func (rc *generateCert) generateClientCert(ctx context.Context, log logr.Logger, cluster *resource.Cluster) error {
