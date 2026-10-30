@@ -22,14 +22,15 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	apiresource "k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	crdbv1alpha1 "github.com/cockroachdb/cockroach-operator/apis/v1alpha1"
 	"github.com/cockroachdb/cockroach-operator/e2e"
 	"github.com/cockroachdb/cockroach-operator/pkg/controller"
+	"github.com/cockroachdb/cockroach-operator/pkg/features"
 	"github.com/cockroachdb/cockroach-operator/pkg/testutil"
 	testenv "github.com/cockroachdb/cockroach-operator/pkg/testutil/env"
+	"github.com/cockroachdb/cockroach-operator/pkg/utilfeature"
 	"github.com/go-logr/zapr"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap/zaptest"
@@ -41,7 +42,14 @@ func TestVersionCheckerJobPodPending(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping test in short mode.")
 	}
-	// Does not seem to like running in parallel
+	// The feature gate is global, so this test must not run in parallel.
+	gate := utilfeature.DefaultMutableFeatureGate
+	wasEnabled := gate.Enabled(features.AffinityRules)
+	require.NoError(t, gate.SetFromMap(map[string]bool{string(features.AffinityRules): true}))
+	t.Cleanup(func() {
+		require.NoError(t, gate.SetFromMap(map[string]bool{string(features.AffinityRules): wasEnabled}))
+	})
+
 	testLog := zapr.NewLogger(zaptest.NewLogger(t))
 
 	e := testenv.CreateActiveEnvForTest()
@@ -54,19 +62,32 @@ func TestVersionCheckerJobPodPending(t *testing.T) {
 	builder := testutil.NewBuilder("crdb").Namespaced(sb.Namespace).WithNodeCount(3).WithTLS().
 		WithImage(e2e.MajorVersion).
 		WithPVDataStore("32Mi").
-		WithResources(
-			corev1.ResourceRequirements{
-				// This is a hack to make the version checker pod unschedulable. There's likely a better way to do it.
-				Requests: corev1.ResourceList{
-					corev1.ResourceCPU:    apiresource.MustParse("1000"),
-					corev1.ResourceMemory: apiresource.MustParse("1000T"),
+		WithAffinity(&corev1.Affinity{
+			NodeAffinity: &corev1.NodeAffinity{
+				RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+					// An empty selector term matches no nodes. Unlike CR resource
+					// requests, this affinity is copied to the version checker Job.
+					NodeSelectorTerms: []corev1.NodeSelectorTerm{{}},
 				},
-			})
+			},
+		})
 	steps := testutil.Steps{
 		{
 			Name: "start an unschedulable job",
 			Test: func(t *testing.T) {
 				require.NoError(t, sb.Create(builder.Cr()))
+				require.Eventually(t, func() bool {
+					var pods corev1.PodList
+					require.NoError(t, sb.List(&pods, nil))
+					for _, pod := range pods.Items {
+						for _, condition := range pod.Status.Conditions {
+							if condition.Type == corev1.PodScheduled && condition.Status == corev1.ConditionFalse && condition.Reason == corev1.PodReasonUnschedulable {
+								return true
+							}
+						}
+					}
+					return false
+				}, 30*time.Second, time.Second, "version checker pod must be unschedulable")
 				testutil.RequireAtMostOneVersionCheckerJob(t, sb, 300*time.Second)
 			},
 		},
