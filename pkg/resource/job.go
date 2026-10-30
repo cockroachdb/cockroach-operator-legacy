@@ -20,11 +20,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/cockroachdb/cockroach-operator/pkg/features"
 	"github.com/cockroachdb/cockroach-operator/pkg/kube"
 	"github.com/cockroachdb/cockroach-operator/pkg/labels"
 	"github.com/cockroachdb/cockroach-operator/pkg/ptr"
-	"github.com/cockroachdb/cockroach-operator/pkg/utilfeature"
 	kbatch "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apiresource "k8s.io/apimachinery/pkg/api/resource"
@@ -101,29 +99,7 @@ func (b JobBuilder) buildPodTemplate() corev1.PodTemplateSpec {
 		},
 	}
 
-	if utilfeature.DefaultMutableFeatureGate.Enabled(features.AffinityRules) {
-		pod.Spec.Affinity = b.Spec().Affinity
-	}
-
-	if utilfeature.DefaultMutableFeatureGate.Enabled(features.TolerationRules) {
-		pod.Spec.Tolerations = b.Spec().Tolerations
-	}
-
-	if utilfeature.DefaultMutableFeatureGate.Enabled(features.TopologySpreadRules) {
-		pod.Spec.TopologySpreadConstraints = b.Spec().TopologySpreadConstraints
-	}
-
-	secret := b.GetImagePullSecret()
-	if secret != nil {
-		local := corev1.LocalObjectReference{
-			Name: *secret,
-		}
-		pod.Spec.ImagePullSecrets = []corev1.LocalObjectReference{local}
-	}
-
-	if b.Spec().PriorityClassName != "" {
-		pod.Spec.PriorityClassName = b.Spec().PriorityClassName
-	}
+	b.applySchedulingFields(&pod.Spec)
 
 	return pod
 }
