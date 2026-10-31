@@ -69,6 +69,9 @@ func (b *UIIngressBuilder) BuildV1Ingress(obj client.Object) error {
 	}
 
 	kube.MergeAnnotations(ingress.ObjectMeta.Annotations, b.SSLPassThroughAnnotations())
+	if b.Spec().Ingress.UI.TLS != nil {
+		kube.MergeAnnotations(ingress.ObjectMeta.Annotations, b.BackendProtocolAnnotations())
+	}
 	ingressConfig := b.Spec().Ingress
 
 	if ingressConfig == nil {
@@ -113,6 +116,9 @@ func (b *UIIngressBuilder) BuildV1beta1Ingress(obj client.Object) error {
 	}
 
 	kube.MergeAnnotations(ingress.ObjectMeta.Annotations, b.SSLPassThroughAnnotations())
+	if b.Spec().Ingress.UI.TLS != nil {
+		kube.MergeAnnotations(ingress.ObjectMeta.Annotations, b.BackendProtocolAnnotations())
+	}
 	ingressConfig := b.Spec().Ingress
 
 	if ingressConfig == nil {
@@ -202,5 +208,11 @@ func getV1IngressRule(host, serviceName string, servicePort intstr.IntOrString) 
 func (b *UIIngressBuilder) SSLPassThroughAnnotations() map[string]string {
 	return map[string]string{
 		"nginx.ingress.kubernetes.io/ssl-passthrough": "true",
+	}
+}
+
+func (b *UIIngressBuilder) BackendProtocolAnnotations() map[string]string {
+	return map[string]string{
+		"nginx.ingress.kubernetes.io/backend-protocol": "HTTPS",
 	}
 }
