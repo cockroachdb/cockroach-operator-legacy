@@ -317,6 +317,7 @@ release/gen-templates:
 	bazel run //hack/crdbversions:crdbversions -- -operator-version $(APP_VERSION) -crdb-versions $(PWD)/crdb-versions.yaml -repo-root $(PWD)
 	bazel run //config/crd:manifest.preview > install/crds.yaml
 	bazel run //config/operator:manifest.preview > install/operator.yaml
+	bazel run //config/user_permissions:manifest.preview > install/user_permission_clusterrole.yaml
 
 # Generate various manifest files for OpenShift. We run this target after the
 # operator version is changed. The results are committed to Git.
