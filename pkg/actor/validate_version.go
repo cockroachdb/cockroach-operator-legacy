@@ -83,6 +83,8 @@ func (v *versionChecker) Act(ctx context.Context, cluster *resource.Cluster, log
 			log.Error(vErr, "The cockroachdb logging API value is set to a value that is not supported by the operator")
 			return err
 		}
+	} else {
+		log.V(DEBUGLEVEL).Info("logging API is not enabled")
 	}
 
 	log.V(DEBUGLEVEL).Info("starting to check the crdb version of the container provided")

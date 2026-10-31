@@ -366,7 +366,12 @@ func (cluster Cluster) IsLoggingAPIEnabled() bool {
 	if cluster.Spec().CockroachDBVersion != "" {
 		version = cluster.Spec().CockroachDBVersion
 	} else if cluster.Spec().Image != nil && cluster.Spec().Image.Name != "" {
-		version = strings.Split(cluster.Spec().Image.Name, ":")[1]
+		split_result := strings.Split(cluster.Spec().Image.Name, ":")
+		if len(split_result) > 1 {
+			version = split_result[1]
+		} else {
+			return false
+		}
 	} else {
 		return false
 	}

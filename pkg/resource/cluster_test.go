@@ -86,3 +86,35 @@ func TestClusterTLSSecrets(t *testing.T) {
 		})
 	}
 }
+
+func TestClusterImageName(t *testing.T) {
+	var (
+		testCluster      = "test-cluster"
+		testNS           = "test-ns"
+		invalidImageName = "custom-image-name"
+		validImageName   = "cockroachdb/cockroach:v20.1.4"
+	)
+	clusterBuilder := testutil.NewBuilder(testCluster).Namespaced(testNS)
+	for _, tt := range []struct {
+		name      string
+		cluster   *resource.Cluster
+		imageName string
+	}{
+		{
+			name:      "verify image name without colon",
+			cluster:   clusterBuilder.WithImage(invalidImageName).Cluster(),
+			imageName: invalidImageName,
+		},
+		{
+			name:      "verify image name with colon",
+			cluster:   clusterBuilder.WithImage(validImageName).Cluster(),
+			imageName: validImageName,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.cluster.IsLoggingAPIEnabled() {
+				assert.Fail(t, "LoggingAPI should be disabled when image name does not contain colon")
+			}
+		})
+	}
+}
