@@ -90,6 +90,13 @@ func (b *SQLIngressBuilder) BuildV1Ingress(obj client.Object) error {
 		ingress.Spec.IngressClassName = &ingressConfig.SQL.IngressClassName
 	}
 
+	for i := range ingressConfig.SQL.TLS {
+		ingress.Spec.TLS = append(ingress.Spec.TLS, v1.IngressTLS{
+			Hosts:      ingressConfig.SQL.TLS[i].Hosts,
+			SecretName: ingressConfig.SQL.TLS[i].SecretName,
+		})
+	}
+
 	return nil
 }
 
