@@ -107,7 +107,7 @@ func (d decommission) Act(ctx context.Context, cluster *resource.Cluster, log lo
 	// see https://github.com/cockroachdb/cockroach-operator/issues/204 for above TODO
 	if cluster.Spec().TLSEnabled {
 		conn.UseSSL = true
-		conn.ClientCertificateSecretName = cluster.ClientTLSSecretName()
+		conn.ClientCertificateSecretName = cluster.ClientTLSSecretName("root")
 		conn.RootCertificateSecretName = cluster.NodeTLSSecretName()
 	}
 	db, err := database.NewDbConnection(conn)
