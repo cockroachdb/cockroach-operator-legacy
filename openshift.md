@@ -1,16 +1,121 @@
-# Testing this out with OpenShift
+# OpenShift
 
-This guide outlines the steps necessary to test out the operator in an OpenShift cluster. It assumes you are running
-this from the git root of the [cockroach-operator repo](https://github.com/cockroachdb/cockroach-operator).
+For OLM installations, the first section covers operator updates, database image
+overrides, and platform versions. The rest of this guide is for contributors testing
+the operator on a dedicated OpenShift cluster, from the root of this repository.
 
 Steps in this guide:
 
+* Using OLM
 * Prerequisites
 * Create an OpenShift cluster with GCP (~40m)
 * Installing the operator
 * Creating a CrdbCluster
 * Verifying the cluster is operational
 * Tearing down the cluster
+
+## Using OLM
+
+An OLM bundle contains the CSV, operator Deployment, CRD, permissions, and database
+image references. Red Hat publishes bundles into OpenShift catalogs. A Subscription selects
+updates from a catalog and channel; OLM applies them through an InstallPlan.
+
+The operator image and bundles are released separately. For publishing instructions,
+see [Publish OpenShift bundles](README.md#publish-openshift-bundles).
+
+### Platform versions
+
+The v2.18.6 release prepares these catalog ranges:
+
+| Package | OpenShift catalog range |
+| --- | --- |
+| `cockroachdb-certified` | 4.12-4.22 |
+| `cockroachdb-certified-rhmp` | 4.12-4.21 |
+
+| OpenShift | Kubernetes minor |
+| --- | --- |
+| 4.19 | 1.32 |
+| 4.20 | 1.33 |
+| 4.21 | 1.34 |
+| 4.22 | 1.35 |
+
+These are release targets until testing and certification are complete. The CSV's
+`minKubeVersion` is a minimum, not a tested maximum. Confirm that the published
+release is available and supported on your platform before installing it.
+
+OpenShift 4.22 removes the Marketplace catalog. Use the certified package for new
+installations there. Existing Marketplace installations need a supported package
+transition; changing the Subscription package name alone is not a normal update.
+See [Red Hat's catalog guidance](https://access.redhat.com/solutions/7137196).
+
+### Update the operator
+
+1. Record the platform version, installed CSV, and Subscription package, channel, and
+   CatalogSource. Confirm the new bundle is available for that OpenShift version.
+
+   ```shell
+   oc version -o yaml
+   oc -n <operator-namespace> get subscription <subscription-name> -o yaml
+   oc -n <operator-namespace> get csv <installed-csv> -o yaml
+   ```
+
+2. Keep the database version and existing image overrides fixed during the operator
+   update. For controlled approval, set `installPlanApproval: Manual` and ensure any
+   GitOps approval automation follows the same policy.
+3. Read `status.installPlanRef` from the Subscription and review that plan's target
+   CSVs and resource changes. The path may include intermediate operator versions.
+   `startingCSV` selects an initial installation; it does not request or pin an upgrade.
+
+   ```shell
+   oc -n <operator-namespace> get installplan <referenced-plan> -o yaml
+   ```
+
+4. Approve the intended plan. Wait for the InstallPlan to complete, the installed CSV
+   to reach `Succeeded`, and the operator Deployment to become available. Verify the
+   running operator image and Subscription status, then check database pods and SQL
+   health. Reconciliation can roll database pods if their configuration has drifted.
+
+### Use a database image not bundled with the installed operator
+
+Use a certified image for the intended database version and CPU architecture. Confirm
+that its digest is available through your registry or mirror. An image override does
+not update the operator or change its platform compatibility.
+
+1. Add the mapping to `Subscription.spec.config.env`, preserving existing entries.
+   With GitOps, make this change in the source manifest. Replace the placeholders below:
+
+   ```yaml
+   spec:
+     config:
+       env:
+         - name: RELATED_IMAGE_COCKROACH_v<major>_<minor>_<patch>
+           value: <registry>/<repository>@sha256:<digest>
+   ```
+
+   For example, `v25.4.19` uses the variable name `RELATED_IMAGE_COCKROACH_v25_4_19`.
+   OLM manages the CSV and Deployment; keep this configuration in the Subscription.
+2. Allow for an operator restart, which can reconcile existing database configuration
+   and roll pods. Wait for the Deployment rollout and verify the mapping in the
+   running operator pod before changing the database CR.
+3. Follow the database upgrade procedure, setting `spec.cockroachDBVersion` to the
+   intended version. `spec.image.name` takes precedence, so leave it unset for this
+   route. Check pod images, readiness, SQL health, and application behavior afterward.
+4. Keep each mapping while any managed database still uses it. Remove an override only
+   after confirming the operator supplies the required image mapping itself.
+
+Review the [release notes](CHANGELOG.md) before a database upgrade, including the
+v2.18.6 note about the first version change on existing clusters. Database major
+upgrades also require their own finalization and rollback procedure.
+
+### Before upgrading OpenShift
+
+Confirm the installed operator is supported on the destination platform and its
+package is available in the destination catalog or mirror. Upgrade OpenShift as a
+separate change, keeping the database version fixed. Afterward, check catalog readiness,
+Subscription resolution, operator availability, database pods, and SQL health.
+
+For migration to the Helm-installed CockroachDB Operator, use the separate
+[migration guide](https://www.cockroachlabs.com/docs/v26.2/migrate-cockroachdb-kubernetes-operator).
 
 ## Prerequisites
 

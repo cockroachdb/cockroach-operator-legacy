@@ -27,15 +27,23 @@ on:
 jobs:
   e2e-kind-create:
     runs-on: [self-hosted, ubuntu_2404]
-    strategy:
-      fail-fast: false
+    env:
+      NODE_VERSION: "1.35.9"
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Mount bazel cache
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: "~/.cache/bazel"
           key: bazel
 
+      - name: Set up matching kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: v${{ env.NODE_VERSION }}
+
       - name: End-to-end (k3d)
+        env:
+          K3D_IMAGE: rancher/k3s:v${{ env.NODE_VERSION }}-k3s1
+          CLUSTER_NAME: create-${{ github.run_id }}-${{ github.run_attempt }}-${{ env.NODE_VERSION }}
         run: make test/e2e/k3d-create

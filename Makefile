@@ -40,6 +40,10 @@ PULL_SECRET?=
 GCP_REGION?=
 BASE_DOMAIN?=
 EXTRA_KUBETEST2_PARAMS?=
+OPENSHIFT_KUBECONFIG?=$(HOME)/openshift-$(CLUSTER_NAME)/auth/kubeconfig
+
+# Default for local runs and jobs without a version matrix; CI can override it.
+K3D_IMAGE?=rancher/k3s:v1.23.3-k3s1
 
 #
 # Unit Testing Targets
@@ -68,7 +72,7 @@ test/lint:
 # NODE_VERSION refers the to patch version of Kubernetes (e.g. 1.22.6)
 .PHONY: test/smoketest
 test/smoketest:
-	@bazel run //hack/smoketest -- -dir $(PWD) -version $(NODE_VERSION)
+	@bazel run //hack/smoketest -- -dir $(PWD) -version $(NODE_VERSION) -cluster $(CLUSTER_NAME)
 
 # Run only e2e stort tests
 # We can use this to only run one specific test
@@ -94,7 +98,7 @@ test/e2e-short:
 test/e2e/testrunner-k3d-%: PACKAGE=$*
 test/e2e/testrunner-k3d-%:
 	bazel run //hack/k8s:k8s -- -type k3d
-	bazel test --test_output=all --stamp //e2e/$(PACKAGE)/... --test_arg=-test.v --test_arg=-test.parallel=4 --test_arg=parallel=true
+	bazel test --test_output=all --stamp --cache_test_results=no //e2e/$(PACKAGE)/... --test_arg=-test.v --test_arg=-test.parallel=4 --test_arg=parallel=true
 
 # Use this target to run e2e tests using a k3d k8s cluster.
 # This target uses k3d to start a k8s cluster  and runs the e2e tests
@@ -109,9 +113,9 @@ test/e2e/testrunner-k3d-%:
 test/e2e/k3d-%: PACKAGE=$*
 test/e2e/k3d-%:
 	bazel build //hack/bin/... //e2e/kubetest2-k3d/...
-	PATH=$(BINPATH)/hack/bin:$(BINPATH)/e2e/kubetest2-k3d/kubetest2-k3d_/:${PATH} \
+	PATH=${PATH}:$(BINPATH)/hack/bin:$(BINPATH)/e2e/kubetest2-k3d/kubetest2-k3d_/ \
 		kubetest2 k3d \
-		--cluster-name=$(CLUSTER_NAME) --image rancher/k3s:v1.23.3-k3s1 --servers 3 \
+		--cluster-name=$(CLUSTER_NAME) --image $(K3D_IMAGE) --servers 3 \
 		--up --down -v 10 --test=exec -- make test/e2e/testrunner-k3d-$(PACKAGE)
 
 # This target is used by kubetest2-eks to run e2e tests.
@@ -175,9 +179,9 @@ test/e2e/gke:
 
 .PHONY: test/e2e/testrunner-openshift
 test/e2e/testrunner-openshift:
-	bazel test --stamp //e2e/upgrades/...  --action_env=KUBECONFIG=$(HOME)/openshift-$(CLUSTER_NAME)/auth/kubeconfig
-	bazel test --stamp //e2e/create/...  --action_env=KUBECONFIG=$(HOME)/openshift-$(CLUSTER_NAME)/auth/kubeconfig
-	bazel test --stamp //e2e/decommission/...  --action_env=KUBECONFIG=$(HOME)/openshift-$(CLUSTER_NAME)/auth/kubeconfig
+	bazel test --stamp --cache_test_results=no //e2e/upgrades/... --action_env=KUBECONFIG="$(OPENSHIFT_KUBECONFIG)"
+	bazel test --stamp --cache_test_results=no //e2e/create/... --action_env=KUBECONFIG="$(OPENSHIFT_KUBECONFIG)"
+	bazel test --stamp --cache_test_results=no //e2e/decommission/... --action_env=KUBECONFIG="$(OPENSHIFT_KUBECONFIG)"
 
 # Use this target to run e2e tests with a openshift cluster.
 # This target uses kubetest2 to start a openshift cluster and runs the e2e tests
