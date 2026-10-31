@@ -5,7 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-# [Unreleased](https://github.com/cockroachdb/cockroach-operator/compare/v2.18.5...master)
+# [Unreleased](https://github.com/cockroachdb/cockroach-operator/compare/v2.18.6...master)
+
+# [v2.18.6](https://github.com/cockroachdb/cockroach-operator/compare/v2.18.5...v2.18.6)
+* Added support for CockroachDB v24.1.34, v24.3.37, v25.2.25, v25.2.26, v25.4.18, v25.4.19, v26.2.8, v26.2.9, v26.2.10, v26.3.3, and v26.3.4.
 * Updated the operator build toolchain to Go 1.26.10 to address Go standard-library vulnerabilities.
 * Fixed a stall where a cluster stopped making progress after the operator created its RBAC resources, leaving it without a StatefulSet until the next cache resync.
 * Fixed an extra rolling restart of all pods on the first deploy after a restart, including for changes that should not touch pods such as a node count change.
