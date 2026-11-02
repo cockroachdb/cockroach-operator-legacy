@@ -50,9 +50,10 @@ func main() {
 	flag.StringVar(&version, "version", "1.22.1", "the (patch) version of kubernetes")
 	flag.Parse()
 
-	// ensure k3d, kubectl, etc. are on the path
+	// We prefer the caller's tools so CI uses its matching kubectl,
+	// with the bundled tools available as fallbacks.
 	path := os.Getenv("PATH")
-	os.Setenv("PATH", fmt.Sprintf("%s:%s", filepath.Join(os.Getenv("PWD"), "hack", "bin"), path))
+	os.Setenv("PATH", path+string(os.PathListSeparator)+filepath.Join(os.Getenv("PWD"), "hack", "bin"))
 
 	// change to the desired dir (typically $BUILD_WORKSPACE_DIRECTORY)
 	if err := os.Chdir(dir); err != nil {

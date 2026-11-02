@@ -28,19 +28,28 @@ on:
 jobs:
   smoketest:
     runs-on: [self-hosted, ubuntu_2404]
+    timeout-minutes: 45
     strategy:
+      fail-fast: false
       matrix:
-        # supported Kubenetes versions
-        NODE_VERSION: [1.19.16, 1.20.15, 1.21.9, 1.22.6, 1.23.3]
+        # Smoke targets, not an OpenShift certification/support declaration.
+        # Retain the old targets and cover the Kubernetes minors in OCP 4.19-4.22.
+        NODE_VERSION: [1.19.16, 1.20.15, 1.21.9, 1.22.6, 1.23.3, 1.32.13, 1.33.9, 1.34.12, 1.35.9]
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Mount bazel cache
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: "~/.cache/bazel"
           key: bazel
 
+      - name: Set up matching kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: v${{ matrix.NODE_VERSION }}
+
       - name: Bank Workload
         env:
           NODE_VERSION: ${{ matrix.NODE_VERSION }}
+          CLUSTER_NAME: smoke-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.NODE_VERSION }}
         run: make test/smoketest

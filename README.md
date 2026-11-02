@@ -29,6 +29,10 @@ OpenShift Nightly: [![OpenShift Nightly](https://teamcity.cockroachdb.com/guestA
 - [kubectl](https://kubernetes.io/docs/tasks/tools/install-kubectl/)
 - A GKE cluster (`n2-standard-4` is the minimum requirement for testing)
 
+For OpenShift catalog ranges, OLM updates, and database image overrides, see
+[Using OLM](openshift.md#using-olm).
+The Kubernetes minimum above is not a tested maximum or an OpenShift certification statement.
+
 ## Install the Operator
 
 Apply the custom resource definition (CRD) for the Operator:
@@ -204,5 +208,59 @@ After the PR is merged run the following to create the tag (you'll need to be a 
 
 ## Run Release Automation
 
-From here, the rest of the release process is done with TeamCity. A CRL team member will need to perform some manual
-steps in RedHat Connect as well. Ping one of us in Slack for info.
+After tagging, a CRL maintainer with access to TeamCity, the release registries,
+and Red Hat Connect runs the release jobs and completes the publication steps below.
+
+### Publish OpenShift bundles
+
+The operator image and OLM bundles are released separately. After publishing the
+image, submit the bundles in follow-up PRs to the Red Hat repositories.
+
+1. Set the intended catalog ranges in `hack/bundle.sh` before the release. It writes
+   `com.redhat.openshift.versions` into each generated bundle's `metadata/annotations.yaml`.
+   For v2.18.6, the certified range is 4.12-4.22 and Marketplace is 4.12-4.21, because
+   OpenShift 4.22 removes the Marketplace catalog.
+2. Run the existing CI and target OpenShift tests. The creation/upgrade CI targets
+   Kubernetes 1.35.
+   Smoke tests need the published image. To reuse the OpenShift suites on a dedicated
+   test cluster, run:
+
+   ```shell
+   oc --kubeconfig=/absolute/path/to/test-kubeconfig version -o yaml
+   make test/e2e/testrunner-openshift OPENSHIFT_KUBECONFIG=/absolute/path/to/test-kubeconfig
+   ```
+
+   These suites create/delete databases and the shared CRD. Results are not cached
+   across runs against different platforms. k3d CI does not replace OpenShift/OLM checks.
+3. After tagging, run [Publish to Docker Hub](https://teamcity.cockroachdb.com/buildConfiguration/Internal_Release_Publish_CockroachOperator_PublishToDockerHub),
+   then [Publish Operator to RedHat](https://teamcity.cockroachdb.com/buildConfiguration/Internal_Release_Publish_CockroachOperator_PublishToRedHat)
+   against the release revision. These jobs use `build/release/teamcity-publish-release.sh`
+   and `build/release/teamcity-publish-openshift.sh`, respectively. In Red Hat Connect, confirm the operator
+   image's certification results and publication status, and verify its published
+   pullspec is available before generating bundles that reference it.
+4. Run `make release/generate-bundle`. It creates `bundle/cockroachdb-certified` and
+   `bundle/cockroachdb-certified-rhmp`, pinning the operator image to a digest. Check
+   package, version, channel, related images, CRD, and OpenShift range in each bundle.
+5. Publish and check each bundle using `build/release/teamcity-publish-openshift-bundle.sh`
+   in the release environment. The default is the certified
+   bundle; `MARKETPLACE` selects the Marketplace variant. Complete the applicable
+   Red Hat Connect publication requirements and submit the generated bundles to
+   [certified-operators](https://github.com/redhat-openshift-ecosystem/certified-operators)
+   and [redhat-marketplace-operators](https://github.com/redhat-openshift-ecosystem/redhat-marketplace-operators).
+   Use `operators/<package>/<version>/`, with no leading `v` in the directory version.
+6. Check the certification results and the post-merge release pipeline. The release
+   bot's `Release info` lists the published bundle and updated index tags. Confirm
+   the intended catalogs and mirrors contain the release; check the package/version
+   through OperatorHub or OLM on the target platform before announcing availability.
+7. Confirm the OLM update route from supported installed versions with the database
+   version fixed. New OCP catalogs must allow updates from older installed CSVs;
+   include the necessary history or a supported skip edge if required.
+
+The existing non-FBC packages use the pipeline's default semver graph mode, which
+builds version-order edges even when submitted CSVs have no `replaces`. Preserve that
+strategy unless intentionally changing the update path. See
+[pipeline graph configuration](https://redhat-openshift-ecosystem.github.io/operator-pipelines/users/operator-ci-yaml/).
+
+The bundle's OpenShift range selects catalog destinations; the CSV's `minKubeVersion`
+sets a Kubernetes minimum. Neither replaces platform testing or certification.
+For end-user upgrade steps, see [Using OLM](openshift.md#using-olm).

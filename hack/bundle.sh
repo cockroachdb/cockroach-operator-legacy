@@ -21,7 +21,10 @@ if [[ -z "${BUILD_WORKSPACE_DIRECTORY:-}" ]]; then
   exit 1
 fi
 
-openshift_versions="v4.12-v4.19"
+# Catalog targets for this release. Complete the platform checks in README.md
+# before publishing these bundles. The Marketplace catalog is removed in OCP 4.22.
+openshift_versions="v4.12-v4.22"
+marketplace_openshift_versions="v4.12-v4.21"
 
 # ensure tool dependencies are on the path
 export PATH="$(pwd)/hack/bin:${PATH}"
@@ -78,9 +81,13 @@ generate_bundle() {
 
   # Ensure package name is correct for the specific bundle and that the CSV name matches the package name. Also removing
   # the testing annotations since these are handled automatically upstream. Also add openshift version annotation
-  local openshift_version_annotation="  com.redhat.openshift.versions: ${openshift_versions}"
+  local supported_versions="${openshift_versions}"
+  if [[ "${pkg}" == cockroachdb-certified-rhmp ]]; then
+    supported_versions="${marketplace_openshift_versions}"
+  fi
+  local openshift_version_annotation="  com.redhat.openshift.versions: ${supported_versions}"
   sed \
-  -e "s+annotations:+annotations:\n  # Minimum Openshift version annotation\n${openshift_version_annotation}+" \
+  -e "s+annotations:+annotations:\n  # OpenShift catalog version range\n${openshift_version_annotation}+" \
   -e "s/package.v1: cockroach-operator/package.v1: ${pkg}/g" \
   -e "/\s*# Annotations for testing/d" \
   -e "/\s*operators.operatorframework.io.test/d" \
