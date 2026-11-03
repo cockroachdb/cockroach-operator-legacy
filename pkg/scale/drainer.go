@@ -160,9 +160,10 @@ func (d *CockroachNodeDrainer) makeDrainStatusChecker(id uint) func(ctx context.
 		}
 
 		r := csv.NewReader(strings.NewReader(stdout))
-		// skip header
-		if _, err := r.Read(); err != nil {
-			return 0, err
+
+		header, err := r.Read()
+		if err != nil {
+			return 0, errors.Wrap(err, "failed to read CSV header")
 		}
 
 		record, err := r.Read()
@@ -170,7 +171,38 @@ func (d *CockroachNodeDrainer) makeDrainStatusChecker(id uint) func(ctx context.
 			return 0, errors.Wrapf(err, "failed to get node draining status, id=%d", id)
 		}
 
-		isLive, replicasStr, isDecommissioning := record[8], record[9], record[10]
+		columns := make(map[string]int, len(header))
+		for i, name := range header {
+			columns[name] = i
+		}
+
+		getColumn := func(name string) (string, error) {
+			index, ok := columns[name]
+			if !ok {
+				return "", errors.Errorf("missing column %s", name)
+			}
+
+			if index >= len(record) {
+				return "", errors.Errorf("missing value for column %s", name)
+			}
+
+			return record[index], nil
+		}
+
+		isLive, err := getColumn("is_live")
+		if err != nil {
+			return 0, err
+		}
+
+		replicasStr, err := getColumn("gossiped_replicas")
+		if err != nil {
+			return 0, err
+		}
+
+		isDecommissioning, err := getColumn("is_decommissioning")
+		if err != nil {
+			return 0, err
+		}
 
 		d.Logger.V(int(zapcore.InfoLevel)).Info(
 			"draining node due to decommission",
