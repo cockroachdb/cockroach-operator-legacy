@@ -20,7 +20,7 @@ kind: Pod
 metadata:
   name: cockroachdb-client-secure
 spec:
-  serviceAccountName: cockroachdb-sa
+  serviceAccountName: default
   containers:
   - name: cockroachdb-client-secure
     image: cockroachdb/cockroach:{{ .LatestStableCrdbVersion }}
