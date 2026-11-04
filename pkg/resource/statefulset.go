@@ -341,7 +341,7 @@ func (b StatefulSetBuilder) nodeTLSSecretName() string {
 
 func (b StatefulSetBuilder) clientTLSSecretName() string {
 	if b.Spec().ClientTLSSecret == "" {
-		return b.Cluster.ClientTLSSecretName()
+		return b.Cluster.ClientTLSSecretName("root")
 	}
 
 	return b.Spec().ClientTLSSecret

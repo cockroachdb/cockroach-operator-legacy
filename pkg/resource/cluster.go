@@ -308,12 +308,12 @@ func (cluster Cluster) NodeTLSSecretName() string {
 	return fmt.Sprintf("%s-node", cluster.Name())
 }
 
-func (cluster Cluster) ClientTLSSecretName() string {
+func (cluster Cluster) ClientTLSSecretName(user string) string {
 	if cluster.Spec().ClientTLSSecret != "" {
 		return cluster.Spec().ClientTLSSecret
 	}
 
-	return fmt.Sprintf("%s-root", cluster.Name())
+	return fmt.Sprintf("%s-%s", cluster.Name(), user)
 }
 func (cluster Cluster) CASecretName() string {
 	return fmt.Sprintf("%s-ca", cluster.Name())

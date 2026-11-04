@@ -98,7 +98,7 @@ func (rc *generateCert) Act(ctx context.Context, cluster *resource.Cluster, log 
 	// certificate should we delete the node secret?
 
 	// generate the client certificates for the database to use
-	if err := rc.generateClientCert(ctx, log, cluster); err != nil {
+	if err := rc.generateClientCert(ctx, log, cluster, "root"); err != nil {
 		msg := "error generating Client Certificate"
 		log.Error(err, msg)
 		return errors.Wrap(err, msg)
@@ -347,11 +347,11 @@ func (rc *generateCert) generateNodeCert(
 	return exp, replacedLiveCert, err
 }
 
-func (rc *generateCert) generateClientCert(ctx context.Context, log logr.Logger, cluster *resource.Cluster) error {
+func (rc *generateCert) generateClientCert(ctx context.Context, log logr.Logger, cluster *resource.Cluster, user string) error {
 	log.V(DEBUGLEVEL).Info("generating client certificate")
 
 	// load the secret.  If it exists don't update the cert
-	secret, err := resource.LoadTLSSecret(cluster.ClientTLSSecretName(),
+	secret, err := resource.LoadTLSSecret(cluster.ClientTLSSecretName(user),
 		resource.NewKubeResource(ctx, rc.client, cluster.Namespace(), kube.DefaultPersister))
 	if client.IgnoreNotFound(err) != nil {
 		return errors.Wrap(err, "failed to get client TLS secret")
@@ -367,7 +367,7 @@ func (rc *generateCert) generateClientCert(ctx context.Context, log logr.Logger,
 
 	// Create the user for the certificate
 	u := &security.SQLUsername{
-		U: "root",
+		U: user,
 	}
 
 	// Create the client certificates
@@ -390,18 +390,18 @@ func (rc *generateCert) generateClientCert(ctx context.Context, log logr.Logger,
 		return errors.Wrap(err, "unable to read ca.crt")
 	}
 
-	pemCert, err := os.ReadFile(filepath.Join(rc.CertsDir, "client.root.crt"))
+	pemCert, err := os.ReadFile(filepath.Join(rc.CertsDir, fmt.Sprintf("client.%s.crt", user)))
 	if err != nil {
-		return errors.Wrap(err, "unable to read client.root.crt")
+		return errors.Wrap(err, fmt.Sprintf("unable to read client.%s.crt", user))
 	}
 
-	pemKey, err := os.ReadFile(filepath.Join(rc.CertsDir, "client.root.key"))
+	pemKey, err := os.ReadFile(filepath.Join(rc.CertsDir, fmt.Sprintf("client.%s.key", user)))
 	if err != nil {
-		return errors.Wrap(err, "unable to read client.root.key")
+		return errors.Wrap(err, fmt.Sprintf("unable to read client.%s.key", user))
 	}
 
 	// create and save the TLS certificates into a secret
-	secret = resource.CreateTLSSecret(cluster.ClientTLSSecretName(),
+	secret = resource.CreateTLSSecret(cluster.ClientTLSSecretName(user),
 		resource.NewKubeResource(ctx, rc.client, cluster.Namespace(), kube.DefaultPersister))
 
 	if err = secret.UpdateCertAndKeyAndCA(pemCert, pemKey, ca, log); err != nil {

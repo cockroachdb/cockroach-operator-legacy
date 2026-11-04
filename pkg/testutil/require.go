@@ -235,7 +235,7 @@ func RequireDownGradeOptionSet(t *testing.T, sb testenv.DiffingSandbox, b Cluste
 		DatabaseName: "system",
 
 		RunningInsideK8s:            false,
-		ClientCertificateSecretName: b.Cluster().ClientTLSSecretName(),
+		ClientCertificateSecretName: b.Cluster().ClientTLSSecretName("root"),
 		RootCertificateSecretName:   b.Cluster().NodeTLSSecretName(),
 	}
 
@@ -397,7 +397,7 @@ func requireDatabaseToFunction(t *testing.T, sb testenv.DiffingSandbox, b Cluste
 
 	// set the client certs since we are using SSL
 	if useSSL {
-		conn.ClientCertificateSecretName = b.Cluster().ClientTLSSecretName()
+		conn.ClientCertificateSecretName = b.Cluster().ClientTLSSecretName("root")
 		conn.RootCertificateSecretName = b.Cluster().NodeTLSSecretName()
 	}
 

@@ -153,7 +153,7 @@ func (up *partitionedUpdate) Act(ctx context.Context, cluster *resource.Cluster,
 
 	if cluster.Spec().TLSEnabled {
 		conn.UseSSL = true
-		conn.ClientCertificateSecretName = cluster.ClientTLSSecretName()
+		conn.ClientCertificateSecretName = cluster.ClientTLSSecretName("root")
 		conn.RootCertificateSecretName = cluster.NodeTLSSecretName()
 	}
 
