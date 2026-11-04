@@ -5,7 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-# [Unreleased](https://github.com/cockroachdb/cockroach-operator/compare/v2.18.6...master)
+# [Unreleased](https://github.com/cockroachdb/cockroach-operator/compare/v2.18.7...master)
+
+# [v2.18.7](https://github.com/cockroachdb/cockroach-operator/compare/v2.18.6...v2.18.7)
+* Added an `olm.skipRange` of `>=2.0.0 <2.18.7` to the OpenShift bundle CSVs so OLM offers this version to any installed 2.x operator. Red Hat's catalogs keep only the newest bundle and earlier bundles declared no upgrade path, so existing installs (such as 2.18.2 and 2.18.3) were never offered an update.
 
 # [v2.18.6](https://github.com/cockroachdb/cockroach-operator/compare/v2.18.5...v2.18.6)
 * Extended the certified bundle's OpenShift catalog target through 4.22 and the Marketplace bundle's target through 4.21. The Marketplace catalog is removed in OpenShift 4.22.

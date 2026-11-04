@@ -253,12 +253,15 @@ image, submit the bundles in follow-up PRs to the Red Hat repositories.
    the intended catalogs and mirrors contain the release; check the package/version
    through OperatorHub or OLM on the target platform before announcing availability.
 7. Confirm the OLM update route from supported installed versions with the database
-   version fixed. New OCP catalogs must allow updates from older installed CSVs;
-   include the necessary history or a supported skip edge if required.
+   version fixed. The generated CSVs must carry `olm.skipRange: '>=2.0.0 <VERSION>'`,
+   and the published channel entry must show it.
 
-The existing non-FBC packages use the pipeline's default semver graph mode, which
-builds version-order edges even when submitted CSVs have no `replaces`. Preserve that
-strategy unless intentionally changing the update path. See
+Red Hat's catalogs keep only the newest `cockroachdb-certified` bundle, and the
+packages' `ci.yaml` sets no `updateGraph`, so the catalogs build no version-order
+edges between bundles. Installed operators are offered an update only through the
+`olm.skipRange` annotation that `hack/bundle.sh` writes into each CSV, which OLM
+matches against the installed version even when that bundle is no longer in the
+catalog. Keep it unless intentionally changing the update path. See
 [pipeline graph configuration](https://redhat-openshift-ecosystem.github.io/operator-pipelines/users/operator-ci-yaml/).
 
 The bundle's OpenShift range selects catalog destinations; the CSV's `minKubeVersion`
