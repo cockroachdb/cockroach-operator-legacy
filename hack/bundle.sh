@@ -95,8 +95,8 @@ generate_bundle() {
 
   mv "${dir}/metadata/annotations.yaml.new" "${dir}/metadata/annotations.yaml"
 
-  # Update CSV with correct images, and timestamps
-  adapt_csv "${dir}" "${img}"
+  # Update CSV with correct images, timestamps and upgrade range
+  adapt_csv "${dir}" "${img}" "${version}"
 
   # move the dockerfile into the bundle directory and make it valid
   sed \
@@ -110,16 +110,20 @@ generate_bundle() {
 adapt_csv() {
   local dir="${1}"
   local img="${2}"
+  local version="${3}"
   local pkg="$(basename ${dir})"
   local csv="${dir}/manifests/${pkg}.clusterserviceversion.yaml"
 
   # rename csv to match package name
   mv "${dir}/manifests/cockroach-operator.clusterserviceversion.yaml" "${csv}"
 
-  # replace RH_COCKROACH_OP_IMAGE_PLACEHOLDER with the proper image and CREATED_AT_PLACEHOLDER with the current time
+  # replace RH_COCKROACH_OP_IMAGE_PLACEHOLDER with the proper image and CREATED_AT_PLACEHOLDER with the current time.
+  # The CSVs don't set spec.replaces, so olm.skipRange is what lets OLM offer this version to installed 2.x operators.
+  # The ^ and $ anchors keep the match to the top-level metadata annotations.
   sed \
   -e "s+RH_COCKROACH_OP_IMAGE_PLACEHOLDER+${img}+g" \
   -e "s+CREATED_AT_PLACEHOLDER+"$(date +"%FT%H:%M:%SZ")"+g" \
+  -e "s+^  annotations:\$+  annotations:\n    olm.skipRange: '>=2.0.0 <${version}'+" \
   "${csv}" > "${csv}.new"
 
   mv "${csv}.new" "${csv}"
